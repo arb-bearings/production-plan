@@ -1,0 +1,25 @@
+{
+  "name": "arb-bearings-production-planning",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "db": "\"%USERPROFILE%\\mongodb\\mongodb-win32-x86_64-windows-7.0.12\\bin\\mongod.exe\" --dbpath \"%USERPROFILE%\\mongodb\\data\" --bind_ip 127.0.0.1 --port 27017",
+    "lint": "next lint",
+    "postinstall": "node scripts/patch-next.js"
+  },
+  "dependencies": {
+    "chart.js": "^4.4.3",
+    "jspdf": "^2.5.1",
+    "jspdf-autotable": "^3.6.0",
+    "mongodb": "^6.8.0",
+    "mongoose": "^8.5.1",
+    "next": "^14.2.5",
+    "papaparse": "^5.4.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "xlsx": "^0.18.5"
+  }
+}
