@@ -8,7 +8,7 @@ const ProductionPlanSchema = new mongoose.Schema({
   startYear: { type: Number, default: 2026 },
   finalMonthRuleUnder: { type: String, default: 'merge-backward' },
   finalMonthRuleOver: { type: String, default: 'split-retain' },
-  minThresholds: { type: [Number], default: [] },
+  minThresholds: { type: [Number], default: [0, 0, 0] },
   gapMonth: { type: Number, default: null },
   dividingRatios: { type: [Number], default: [] },
   recentTotal: { type: Number },

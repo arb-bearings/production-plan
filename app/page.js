@@ -45,13 +45,16 @@ export default function Home() {
   const [startYear, setStartYear] = useState(2026);
   const [finalMonthRuleUnder, setFinalMonthRuleUnder] = useState("merge-backward");
   const [finalMonthRuleOver, setFinalMonthRuleOver] = useState("split-retain");
-  const [minThresholds, setMinThresholds] = useState([]);
+  const [minThresholds, setMinThresholds] = useState([0, 0, 0]);
   const [gapMonth, setGapMonth] = useState(null);
   const [dividingRatios, setDividingRatios] = useState([]);
   const [planningError, setPlanningError] = useState(null);
+  const [isGeneratingPlan, setIsGeneratingPlan] = useState(false);
+  const [isRecordsLoading, setIsRecordsLoading] = useState(true);
 
   // Stocks state
   const [stocks, setStocks] = useState({});
+  const [stockLastUpdated, setStockLastUpdated] = useState(null);
   const [isStockDragOver, setIsStockDragOver] = useState(false);
 
   // Sorting state
@@ -72,16 +75,6 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    setMinThresholds(prev => {
-      const requiredLength = Math.max(0, planningPeriod - 1);
-      const next = [...prev];
-      if (next.length < requiredLength) {
-        return [...next, ...Array(requiredLength - next.length).fill(0)];
-      } else if (next.length > requiredLength) {
-        return next.slice(0, requiredLength);
-      }
-      return next;
-    });
     setDividingRatios(prev => {
       const requiredLength = planningPeriod;
       const next = [...prev];
@@ -144,25 +137,25 @@ export default function Home() {
       try {
         setLoadingStatus("Connecting to MongoDB database...");
         
+        // Fast parallel fetch of critical plan and inventory stock data
         await Promise.allSettled([
-          fetchRecords(),
           fetchPlans(),
           fetchStocks()
         ]);
 
         if (!isCancelled) {
-          setLoadingStatus("Compiling dashboard analytics & rolling targets...");
+          // Immediately unlock UI and hide loading screen without delay
+          setIsAppLoading(false);
+          setShowLoadingScreen(false);
         }
+
+        // Fetch records in background without blocking initial render
+        fetchRecords();
       } catch (err) {
         console.error("Initial load sequence error:", err);
-      } finally {
         if (!isCancelled) {
-          setTimeout(() => {
-            setIsAppLoading(false);
-            setTimeout(() => {
-              setShowLoadingScreen(false);
-            }, 500); // Allow fade-out transition to complete before unmounting
-          }, 600);
+          setIsAppLoading(false);
+          setShowLoadingScreen(false);
         }
       }
     };
@@ -176,23 +169,24 @@ export default function Home() {
 
   const fetchRecords = async () => {
     try {
-      setLoadingStatus("Loading historical production records...");
+      setIsRecordsLoading(true);
       const res = await fetch('/api/records');
       const data = await res.json();
       if (data.success) {
         setRecords(data.records || []);
         // Set initial preview to historical records
-        setUploaderPreview(data.records || []);
+        setUploaderPreview((data.records || []).slice(0, 100));
         setUploaderPreviewPage(1);
       }
     } catch (err) {
       console.error("Error fetching records:", err);
+    } finally {
+      setIsRecordsLoading(false);
     }
   };
 
   const fetchStocks = async () => {
     try {
-      setLoadingStatus("Loading inventory stock levels...");
       const res = await fetch('/api/stocks');
       const data = await res.json();
       if (data.success) {
@@ -201,6 +195,9 @@ export default function Home() {
           stockMap[s.bearingNo] = s.quantity;
         });
         setStocks(stockMap);
+        if (data.lastUpdated) {
+          setStockLastUpdated(data.lastUpdated);
+        }
       }
     } catch (err) {
       console.error("Error fetching stocks:", err);
@@ -209,7 +206,6 @@ export default function Home() {
 
   const fetchPlans = async () => {
     try {
-      setLoadingStatus("Loading active rolling production plan...");
       const res = await fetch('/api/plans');
       const data = await res.json();
       if (data.success) {
@@ -225,9 +221,9 @@ export default function Home() {
           setStartYear(planStartYear);
           setFinalMonthRuleUnder(data.plan.finalMonthRuleUnder || "merge-backward");
           setFinalMonthRuleOver(data.plan.finalMonthRuleOver || "split-retain");
-          setMinThresholds(data.plan.minThresholds && data.plan.minThresholds.length === data.plan.planningPeriod - 1 
-            ? data.plan.minThresholds 
-            : Array(data.plan.planningPeriod - 1).fill(0));
+          setMinThresholds(Array.isArray(data.plan.minThresholds) && data.plan.minThresholds.length >= 3 
+            ? data.plan.minThresholds.slice(0, 3) 
+            : [0, 0, 0]);
           setGapMonth(data.plan.gapMonth !== undefined ? data.plan.gapMonth : null);
           setDividingRatios(data.plan.dividingRatios && data.plan.dividingRatios.length === data.plan.planningPeriod
             ? data.plan.dividingRatios
@@ -884,6 +880,7 @@ export default function Home() {
     }
 
     setPlanningError(null);
+    setIsGeneratingPlan(true);
 
     try {
       const res = await fetch('/api/plans', {
@@ -911,6 +908,9 @@ export default function Home() {
         const planStartYear = data.plan.startYear || startYear;
         setStartMonth(planStartMonth);
         setStartYear(planStartYear);
+        setMinThresholds(Array.isArray(data.plan.minThresholds) && data.plan.minThresholds.length >= 3
+          ? data.plan.minThresholds.slice(0, 3)
+          : [0, 0, 0]);
         setGapMonth(data.plan.gapMonth !== undefined ? data.plan.gapMonth : null);
         setDividingRatios(data.plan.dividingRatios && data.plan.dividingRatios.length === data.plan.planningPeriod
           ? data.plan.dividingRatios
@@ -922,6 +922,8 @@ export default function Home() {
     } catch (err) {
       console.error("Generate plan error:", err);
       setPlanningError("Network or server error while generating plan. Please check database connection.");
+    } finally {
+      setIsGeneratingPlan(false);
     }
   };
 
@@ -1643,6 +1645,9 @@ export default function Home() {
       const data = await res.json();
       if (data.success) {
         alert(`Successfully imported stock data! Total Bearing Styles upserted: ${data.modifiedCount}`);
+        if (data.lastUpdated) {
+          setStockLastUpdated(data.lastUpdated);
+        }
         await fetchStocks();
       } else {
         alert("Failed to ingest stocks: " + data.error);
@@ -2354,12 +2359,83 @@ export default function Home() {
         {/* 1. DASHBOARD TAB PANEL */}
         <div id="view-dashboard" className={`view-panel ${activeTab === "dashboard" ? "active" : ""}`}>
           
-          {/* KPI METRICS */}
-          <div className="kpis-grid">
-            <div className="kpi-card">
-              <div className="kpi-label">
-                {metricMode === "quantity" ? "Actual Output Quantity" : (metricMode === "basicValue" ? "Actual Basic Value" : "Actual Output Value (GST)")}
+          {isRecordsLoading && (
+            <div className="dashboard-loading-banner" style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "12px 20px",
+              background: "rgba(139, 92, 246, 0.08)",
+              border: "1px solid rgba(139, 92, 246, 0.2)",
+              borderRadius: "12px",
+              marginBottom: "20px",
+              backdropFilter: "blur(6px)"
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <span className="material-icons-round spinner-rotate" style={{ color: "var(--color-primary)", fontSize: "1.4rem" }}>
+                  sync
+                </span>
+                <div>
+                  <div style={{ fontWeight: "600", fontSize: "0.9rem", color: "var(--text-main)" }}>
+                    Loading Dashboard Analytics & Historical Production Data...
+                  </div>
+                  <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                    You can freely browse and work on Production Planning, Ingestion, and Reports while data syncs.
+                  </div>
+                </div>
               </div>
+              <span className="plan-status-badge badge-draft" style={{ fontSize: "0.75rem", padding: "4px 10px" }}>
+                Syncing Background Data
+              </span>
+            </div>
+          )}
+
+          {isRecordsLoading && records.length === 0 ? (
+            <div className="dashboard-loading-view" style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "90px 20px",
+              background: "var(--bg-surface-opaque, rgba(255, 255, 255, 0.03))",
+              borderRadius: "16px",
+              border: "1px solid var(--border-color, rgba(255, 255, 255, 0.08))",
+              textAlign: "center",
+              minHeight: "450px"
+            }}>
+              <div className="loading-spinner-wrapper" style={{ marginBottom: "20px" }}>
+                <div className="loading-spinner-ring"></div>
+                <span className="material-icons-round loading-center-icon">query_stats</span>
+              </div>
+              <h3 style={{ margin: "0 0 10px", fontSize: "1.3rem", fontWeight: "700", color: "var(--text-main)" }}>
+                Loading Dashboard Analytics...
+              </h3>
+              <p style={{ margin: "0 0 16px", fontSize: "0.9rem", color: "var(--text-muted)", maxWidth: "460px", lineHeight: "1.5" }}>
+                Syncing historical production records and aggregating KPI metrics in the background.
+              </p>
+              <div style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "8px",
+                padding: "8px 16px",
+                borderRadius: "20px",
+                background: "rgba(139, 92, 246, 0.1)",
+                color: "var(--color-primary)",
+                fontSize: "0.8rem",
+                fontWeight: "600"
+              }}>
+                <span className="material-icons-round" style={{ fontSize: "1rem" }}>info</span>
+                Meanwhile, you can freely use Production Planning, Data Ingestion, and other tabs.
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* KPI METRICS */}
+              <div className="kpis-grid">
+                <div className="kpi-card">
+                  <div className="kpi-label">
+                    {metricMode === "quantity" ? "Actual Output Quantity" : (metricMode === "basicValue" ? "Actual Basic Value" : "Actual Output Value (GST)")}
+                  </div>
               <div className="kpi-val">{formatMetric(kpis.totalActual)}</div>
               <div className="kpi-sub neutral"><span className="material-icons-round" style={{fontSize: "0.9rem"}}>timeline</span>Total production volumes</div>
             </div>
@@ -2489,8 +2565,10 @@ export default function Home() {
               </div>
             </div>
           </div>
+        </>
+      )}
 
-        </div>
+    </div>
 
         {/* 2. INGESTION TAB PANEL */}
         <div id="view-ingestion" className={`view-panel ${activeTab === "ingestion" ? "active" : ""}`}>
@@ -2851,26 +2929,6 @@ export default function Home() {
                     disabled={isViewer}
                   />
                 </div>
-                <div className="param-input-group">
-                  <label>Gap Month:</label>
-                  <select 
-                    value={gapMonth === null ? "" : gapMonth} 
-                    onChange={(e) => setGapMonth(e.target.value === "" ? null : parseInt(e.target.value, 10))}
-                    className="param-select"
-                    style={{ minWidth: "160px" }}
-                    disabled={isViewer}
-                  >
-                    <option value="">Default (N/2 + 1)</option>
-                    {Array.from({ length: Math.max(0, planningPeriod - 1) }, (_, i) => i + 2).map(m => {
-                      const horizon = getPlanningMonths(planningPeriod, startMonth, startYear);
-                      const targetMonthInfo = horizon[m - 1];
-                      const monthStr = targetMonthInfo ? ` (${targetMonthInfo.monthName.substring(0,3)} ${targetMonthInfo.year})` : "";
-                      return (
-                        <option key={m} value={m}>Month {m}{monthStr}</option>
-                      );
-                    })}
-                  </select>
-                </div>
               </div>
               <div style={{display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap"}}>
                 <div className="plan-start-badge" title="Active Plan Start Month">
@@ -2890,9 +2948,12 @@ export default function Home() {
                   onClick={triggerGeneratePlan} 
                   className="btn btn-primary" 
                   style={{display: "flex", alignItems: "center", gap: "6px"}}
-                  disabled={isViewer}
+                  disabled={isViewer || isGeneratingPlan}
                 >
-                  <span className="material-icons-round" style={{fontSize: "1.1rem"}}>analytics</span>Generate Plan
+                  <span className={`material-icons-round ${isGeneratingPlan ? "spinner-rotate" : ""}`} style={{fontSize: "1.1rem"}}>
+                    {isGeneratingPlan ? "autorenew" : "analytics"}
+                  </span>
+                  {isGeneratingPlan ? "Generating Plan..." : "Generate Plan"}
                 </button>
                 {activePlan?.status === "Draft" && (
                   <button 
@@ -2907,48 +2968,7 @@ export default function Home() {
               </div>
             </div>
 
-            {minThresholds.length > 0 && (
-              <div className="ratios-config-panel" style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: "8px",
-                padding: "16px",
-                background: "var(--bg-surface-opaque, rgba(255, 255, 255, 0.03))",
-                borderRadius: "12px",
-                border: "1px solid var(--border-color, rgba(255, 255, 255, 0.08))",
-                width: "100%"
-              }}>
-                <span style={{ fontSize: "0.85rem", fontWeight: "600", color: "var(--text-main)" }}>
-                  Minimum Quantity Thresholds for Category Split (Enter value for each threshold):
-                </span>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "12px" }}>
-                  {minThresholds.map((val, idx) => (
-                    <div key={idx} style={{ display: "flex", flexDirection: "column", gap: "4px", minWidth: "120px" }}>
-                      <label style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontWeight: "600" }}>
-                        Min {idx + 1}
-                      </label>
-                      <input 
-                        type="number"
-                        value={val}
-                        onChange={(e) => {
-                          const value = parseInt(e.target.value) || 0;
-                          setMinThresholds(prev => {
-                            const next = [...prev];
-                            next[idx] = Math.max(0, value);
-                            return next;
-                          });
-                        }}
-                        className="param-input"
-                        style={{ width: "100%", textAlign: "center" }}
-                        disabled={isViewer}
-                        min="0"
-                      />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
+            {/* 1. DIVIDING RATIOS PANEL (FIRST) */}
             {dividingRatios.length > 0 && (() => {
               const totalRatioSum = dividingRatios.reduce((s, r) => s + r, 0);
               const isOver = totalRatioSum > 100;
@@ -2963,7 +2983,6 @@ export default function Home() {
                   borderRadius: "12px",
                   border: isOver ? "1px solid var(--color-danger, #ef4444)" : "1px solid var(--border-color, rgba(255, 255, 255, 0.08))",
                   width: "100%",
-                  marginTop: "12px",
                   transition: "all 0.3s"
                 }}>
                   <span style={{ fontSize: "0.85rem", fontWeight: "600", color: "var(--text-main)", display: "flex", justifyContent: "space-between", width: "100%", flexWrap: "wrap", gap: "8px" }}>
@@ -3029,6 +3048,64 @@ export default function Home() {
                 </div>
               );
             })()}
+
+            {/* 2. MINIMUM QUANTITY THRESHOLDS & GAP MONTH PANEL (SECOND / UNDER DIVIDING RATIO) */}
+            <div className="ratios-config-panel" style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "12px",
+              padding: "16px",
+              background: "var(--bg-surface-opaque, rgba(255, 255, 255, 0.03))",
+              borderRadius: "12px",
+              border: "1px solid var(--border-color, rgba(255, 255, 255, 0.08))",
+              width: "100%",
+              marginTop: "12px"
+            }}>
+              <span style={{ fontSize: "0.85rem", fontWeight: "600", color: "var(--text-main)" }}>
+                Minimum Quantity Thresholds (3 Mins) & Gap Month Configuration:
+              </span>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "16px", alignItems: "flex-end" }}>
+                {['Min 1', 'Min 2', 'Min 3'].map((label, idx) => (
+                  <div key={idx} style={{ display: "flex", flexDirection: "column", gap: "4px", minWidth: "120px" }}>
+                    <label style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontWeight: "600" }}>
+                      {label}
+                    </label>
+                    <input 
+                      type="number"
+                      value={minThresholds[idx] || 0}
+                      onChange={(e) => {
+                        const value = parseInt(e.target.value) || 0;
+                        setMinThresholds(prev => {
+                          const next = [...prev];
+                          next[idx] = Math.max(0, value);
+                          return next;
+                        });
+                      }}
+                      className="param-input"
+                      style={{ width: "100%", textAlign: "center" }}
+                      disabled={isViewer}
+                      min="0"
+                    />
+                  </div>
+                ))}
+
+                <div className="param-input-group" style={{ margin: 0, minWidth: "190px" }}>
+                  <label style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontWeight: "600" }}>Gap Month Interval:</label>
+                  <select 
+                    value={gapMonth === null ? "" : gapMonth} 
+                    onChange={(e) => setGapMonth(e.target.value === "" ? null : parseInt(e.target.value, 10))}
+                    className="param-select"
+                    style={{ width: "100%", height: "38px" }}
+                    disabled={isViewer}
+                  >
+                    <option value="">Default (N/2 + 1)</option>
+                    {Array.from({ length: Math.max(1, planningPeriod - 1) }, (_, i) => i + 1).map(gap => (
+                      <option key={gap} value={gap}>{gap} Month{gap > 1 ? "s" : ""} Gap</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
           </div>
 
           {activePlan && (activePlan.recentTotal !== undefined || activePlan.previousTotal !== undefined) && (
@@ -3114,6 +3191,10 @@ export default function Home() {
                 <span className="plan-start-chip">
                   <span className="material-icons-round" style={{ fontSize: "0.9rem" }}>flag</span>
                   Starts: {MONTH_NAMES[startMonth - 1]} {startYear}
+                </span>
+                <span className="stock-configured-chip" title="Inventory stock file last updated timestamp">
+                  <span className="material-icons-round" style={{ fontSize: "0.9rem" }}>inventory_2</span>
+                  Stock Configured: <strong>{stockLastUpdated ? new Date(stockLastUpdated).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Not Configured'}</strong>
                 </span>
               </div>
               <span style={{fontSize: "0.75rem", color: "var(--text-muted)", fontStyle: "italic"}}>
@@ -3484,6 +3565,24 @@ export default function Home() {
               <span className="app-loading-dot"></span>
               <span>{loadingStatus}</span>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* FULLSCREEN PLAN GENERATION BLURRED OVERLAY */}
+      {isGeneratingPlan && (
+        <div className="fullscreen-loading-overlay">
+          <div className="loading-card glassmorphism-card">
+            <div className="loading-spinner-wrapper">
+              <div className="loading-spinner-ring"></div>
+              <span className="material-icons-round loading-center-icon">auto_graph</span>
+            </div>
+            <h3 style={{ margin: "16px 0 8px", fontSize: "1.2rem", fontWeight: "700", color: "var(--text-main)" }}>
+              Generating Production Plan...
+            </h3>
+            <p style={{ margin: 0, fontSize: "0.85rem", color: "var(--text-muted)", maxWidth: "340px", textAlign: "center" }}>
+              Running rolling baseline comparisons, cyclic gap month scheduling, and category threshold redistribution.
+            </p>
           </div>
         </div>
       )}

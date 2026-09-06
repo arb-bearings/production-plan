@@ -20,7 +20,18 @@ export async function GET(request) {
     }
 
     const stocks = await Stock.find({}).lean();
-    return NextResponse.json({ success: true, count: stocks.length, stocks });
+    let lastUpdated = null;
+    if (stocks.length > 0) {
+      const timestamps = stocks
+        .map(s => s.updatedAt || s.createdAt)
+        .filter(Boolean)
+        .map(d => new Date(d).getTime());
+      if (timestamps.length > 0) {
+        lastUpdated = new Date(Math.max(...timestamps)).toISOString();
+      }
+    }
+
+    return NextResponse.json({ success: true, count: stocks.length, stocks, lastUpdated });
   } catch (error) {
     console.error("GET stocks error:", error);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
@@ -64,9 +75,12 @@ export async function POST(request) {
       modifiedCount = (result.upsertedCount || 0) + (result.modifiedCount || 0);
     }
 
+    const lastUpdated = new Date().toISOString();
+
     return NextResponse.json({
       success: true,
-      modifiedCount
+      modifiedCount,
+      lastUpdated
     });
 
   } catch (error) {

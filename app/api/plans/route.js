@@ -47,7 +47,7 @@ export async function GET(request) {
         startMonth,
         startYear,
         { 
-          minThresholds: Array(N - 1).fill(0),
+          minThresholds: [0, 0, 0],
           gapMonth: null,
           dividingRatios: Array(N).fill(0)
         },
@@ -63,7 +63,7 @@ export async function GET(request) {
         startYear,
         finalMonthRuleUnder: 'merge-backward',
         finalMonthRuleOver: 'split-retain',
-        minThresholds: Array(N - 1).fill(0),
+        minThresholds: [0, 0, 0],
         gapMonth: null,
         dividingRatios: Array(N).fill(0),
         recentTotal: baselineResult.recentTotal,
@@ -132,14 +132,17 @@ export async function POST(request) {
       sYear = parseInt(currentYear, 10) || 2026;
     }
 
-    const parsedMinThresholds = Array.isArray(minThresholds) 
-      ? minThresholds.map(t => Math.max(0, parseInt(t, 10) || 0)) 
-      : Array(planningPeriod - 1).fill(0);
+    const rawMinThresholds = Array.isArray(minThresholds) ? minThresholds : [];
+    const parsedMinThresholds = [
+      Math.max(0, parseInt(rawMinThresholds[0], 10) || 0),
+      Math.max(0, parseInt(rawMinThresholds[1], 10) || 0),
+      Math.max(0, parseInt(rawMinThresholds[2], 10) || 0)
+    ];
 
     let parsedGapMonth = null;
     if (gapMonth !== undefined && gapMonth !== null && gapMonth !== "") {
       const parsedVal = parseInt(gapMonth, 10);
-      if (!isNaN(parsedVal) && parsedVal >= 2 && parsedVal <= planningPeriod) {
+      if (!isNaN(parsedVal) && parsedVal >= 1) {
         parsedGapMonth = parsedVal;
       }
     }
