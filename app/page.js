@@ -8,6 +8,11 @@ import Papa from 'papaparse';
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
 
+import LoginPage from '@/components/LoginPage';
+import HeaderUserMenu from '@/components/HeaderUserMenu';
+import UserManagementModal from '@/components/UserManagementModal';
+import ChangePasswordModal from '@/components/ChangePasswordModal';
+
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December"
@@ -20,7 +25,12 @@ export default function Home() {
   const [activePlan, setActivePlan] = useState(null);
   const [activePlanItems, setActivePlanItems] = useState([]);
   
-  const [role, setRole] = useState("Admin"); // Admin, Production Planner, Viewer
+  // Auth state
+  const [currentUser, setCurrentUser] = useState(null);
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
+  const [showUserMgmtModal, setShowUserMgmtModal] = useState(false);
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
+
   const [theme, setTheme] = useState("light"); // light (default), dark
   const [activeTab, setActiveTab] = useState("dashboard"); // dashboard, ingestion, planning, reports
   const [metricMode, setMetricMode] = useState("quantity"); // quantity, basicValue, withGstValue
@@ -129,43 +139,86 @@ export default function Home() {
   // Refs for Chart instances to safely destroy on update
   const chartInstancesRef = useRef({});
 
-  // --- INITIAL DATA FETCH WITH FULL LOADING CYCLE ---
+  const loadAllInitialData = async () => {
+    try {
+      setLoadingStatus("Connecting to MongoDB database...");
+      setIsAppLoading(true);
+      setShowLoadingScreen(true);
+      
+      // Fast parallel fetch of critical plan and inventory stock data
+      await Promise.allSettled([
+        fetchPlans(),
+        fetchStocks()
+      ]);
+
+      setIsAppLoading(false);
+      setShowLoadingScreen(false);
+
+      // Fetch records in background without blocking initial render
+      fetchRecords();
+    } catch (err) {
+      console.error("Initial load sequence error:", err);
+      setIsAppLoading(false);
+      setShowLoadingScreen(false);
+    }
+  };
+
+  // --- SESSION VERIFICATION ON APP MOUNT ---
   useEffect(() => {
     let isCancelled = false;
 
-    const loadAllInitialData = async () => {
+    const verifySession = async () => {
       try {
-        setLoadingStatus("Connecting to MongoDB database...");
-        
-        // Fast parallel fetch of critical plan and inventory stock data
-        await Promise.allSettled([
-          fetchPlans(),
-          fetchStocks()
-        ]);
+        const res = await fetch('/api/auth/me');
+        const data = await res.json();
 
         if (!isCancelled) {
-          // Immediately unlock UI and hide loading screen without delay
-          setIsAppLoading(false);
-          setShowLoadingScreen(false);
+          if (data.success && data.authenticated && data.user) {
+            setCurrentUser(data.user);
+            setIsAuthChecking(false);
+            loadAllInitialData();
+          } else {
+            setCurrentUser(null);
+            setIsAuthChecking(false);
+            setIsAppLoading(false);
+            setShowLoadingScreen(false);
+          }
         }
-
-        // Fetch records in background without blocking initial render
-        fetchRecords();
       } catch (err) {
-        console.error("Initial load sequence error:", err);
+        console.error("Session verification error:", err);
         if (!isCancelled) {
+          setCurrentUser(null);
+          setIsAuthChecking(false);
           setIsAppLoading(false);
           setShowLoadingScreen(false);
         }
       }
     };
 
-    loadAllInitialData();
+    verifySession();
 
     return () => {
       isCancelled = true;
     };
   }, []);
+
+  const handleLoginSuccess = (user) => {
+    setCurrentUser(user);
+    loadAllInitialData();
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (err) {
+      console.error('Logout error:', err);
+    }
+    setCurrentUser(null);
+    setRecords([]);
+    setPlans([]);
+    setActivePlan(null);
+    setActivePlanItems([]);
+  };
 
   const fetchRecords = async () => {
     try {
@@ -246,7 +299,8 @@ export default function Home() {
     }
   }, [theme]);
 
-  // --- ROLE PERSONA INDICATOR CONTROLS ---
+  // --- ROLE CONTROLS (DERIVED FROM AUTHENTICATED USER) ---
+  const role = currentUser?.role || "Viewer";
   const isAdmin = role === "Admin";
   const isPlanner = role === "Production Planner";
   const isViewer = role === "Viewer";
@@ -869,7 +923,7 @@ export default function Home() {
   // --- AUTOMATED PLANNING ENGINE CALL ---
   const triggerGeneratePlan = async () => {
     if (isViewer) {
-      alert("Role Simulation View: Reader Persona does not have write access.");
+      alert("Access Denied: Viewer accounts have read-only permissions.");
       return;
     }
 
@@ -929,7 +983,7 @@ export default function Home() {
 
   const handleApprovePlan = async () => {
     if (!isAdmin) {
-      alert("Role Simulation View: Only Admin persona is allowed to Lock & Approve plans.");
+      alert("Access Denied: Administrator privileges are required to Lock & Approve plans.");
       return;
     }
     if (!activePlan) return;
@@ -1091,7 +1145,7 @@ export default function Home() {
 
   const handleFileUpload = (e) => {
     if (!isAdmin) {
-      alert("Role Simulation View: Only Admin persona is allowed to ingest production data.");
+      alert("Access Denied: Administrator privileges are required to ingest production data.");
       return;
     }
     const file = e.target.files?.[0];
@@ -1502,7 +1556,7 @@ export default function Home() {
 
   const handleStockFileUpload = (e) => {
     if (!isAdmin) {
-      alert("Role Simulation View: Only Admin persona is allowed to ingest stock data.");
+      alert("Access Denied: Administrator privileges are required to ingest stock data.");
       return;
     }
     const file = e.target.files?.[0];
@@ -2114,6 +2168,39 @@ export default function Home() {
     );
   };
 
+  // --- AUTH CHECK LOADING SCREEN ---
+  if (isAuthChecking) {
+    return (
+      <div className="auth-wrapper">
+        <div className="app-loading-screen" style={{ opacity: 1, visibility: "visible" }}>
+          <div className="app-loading-card">
+            <div className="app-loading-badge-wrap">
+              <div className="app-loading-ring"></div>
+              <div className="app-loading-ring-outer"></div>
+              <div className="app-loading-icon">ARB</div>
+            </div>
+            <div className="app-loading-title">ARB BEARINGS</div>
+            <div className="app-loading-subtitle">Verifying security credentials...</div>
+            <div className="app-loading-bar-container">
+              <div className="app-loading-bar"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // --- UN-AUTHENTICATED ACCESS GATE: RENDER LOGIN PAGE ---
+  if (!currentUser) {
+    return (
+      <LoginPage
+        onLoginSuccess={handleLoginSuccess}
+        theme={theme}
+        setTheme={setTheme}
+      />
+    );
+  }
+
   return (
     <div className="app-container">
       
@@ -2127,23 +2214,14 @@ export default function Home() {
           </div>
         </div>
         
-        <div className="header-controls">
-          {/* Role Simulator Selector */}
-          <div className="role-simulator">
-            <span className="material-icons-round" style={{color: "var(--color-primary)", fontSize: "1.1rem"}}>admin_panel_settings</span>
-            <span className="role-label">User Persona</span>
-            <select value={role} onChange={(e) => setRole(e.target.value)} className="role-select">
-              <option value="Admin">Admin (Full Control)</option>
-              <option value="Production Planner">Production Planner</option>
-              <option value="Viewer">Viewer (Read-Only)</option>
-            </select>
-          </div>
-
-          {/* Theme Toggle */}
-          <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")} className="btn-icon" title={theme === "dark" ? "Switch to Light Mode" : "Switch to Dark Mode"}>
-            <span className="material-icons-round">{theme === "dark" ? "light_mode" : "dark_mode"}</span>
-          </button>
-        </div>
+        <HeaderUserMenu
+          currentUser={currentUser}
+          onOpenUserMgmt={() => setShowUserMgmtModal(true)}
+          onOpenChangePassword={() => setShowChangePasswordModal(true)}
+          onLogout={handleLogout}
+          theme={theme}
+          setTheme={setTheme}
+        />
       </header>
 
       {/* TAB NAVIGATION NAVIGATION */}
@@ -2153,6 +2231,7 @@ export default function Home() {
         </button>
         <button onClick={() => handleTabSwitch("ingestion")} className={`tab-btn ${activeTab === "ingestion" ? "active" : ""}`}>
           <span className="material-icons-round" style={{verticalAlign: "middle", marginRight: "6px", fontSize: "1.1rem"}}>cloud_upload</span>Data Ingestion
+          {!isAdmin && <span className="tab-readonly-pill" title="Read-only access: Dataset uploads and record deletion are restricted for your role">Read Only</span>}
         </button>
         <button onClick={() => handleTabSwitch("planning")} className={`tab-btn ${activeTab === "planning" ? "active" : ""}`}>
           <span className="material-icons-round" style={{verticalAlign: "middle", marginRight: "6px", fontSize: "1.1rem"}}>date_range</span>Production Planning
@@ -2573,6 +2652,17 @@ export default function Home() {
         {/* 2. INGESTION TAB PANEL */}
         <div id="view-ingestion" className={`view-panel ${activeTab === "ingestion" ? "active" : ""}`}>
           <div className="ingestion-container">
+
+            {!isAdmin && (
+              <div className="role-restricted-notice">
+                <span className="material-icons-round notice-icon">lock</span>
+                <div>
+                  <span className="notice-title">Ingestion Actions Restricted:</span>
+                  <span>Uploading raw dataset spreadsheets or deleting records requires <strong>Administrator</strong> privileges. As a <strong>{role}</strong>, you have read-only access to view and inspect records.</span>
+                </div>
+              </div>
+            )}
+
             <div className="uploader-card">
               <h3 style={{fontSize: "1.1rem", borderLeft: "3px solid var(--color-primary)", paddingLeft: "10px"}}>Ingest Production Data</h3>
               <p style={{fontSize: "0.85rem", color: "var(--text-muted)"}}>
@@ -2580,8 +2670,15 @@ export default function Home() {
               </p>
               
               <div 
-                className={`dropzone ${isDragOver ? "dragover" : ""}`}
-                onClick={() => document.getElementById("file-input").click()}
+                className={`dropzone ${isDragOver ? "dragover" : ""} ${!isAdmin ? "role-restricted-dropzone" : ""}`}
+                title={!isAdmin ? "🔒 Access Restricted: You do not have permission to upload production data (Administrator role required)" : "Drag & drop or click to select spreadsheet"}
+                onClick={() => {
+                  if (!isAdmin) {
+                    alert("Access Denied: Administrator privileges are required to ingest production data.");
+                    return;
+                  }
+                  document.getElementById("file-input").click();
+                }}
                 onDragOver={(e) => {
                   e.preventDefault();
                   if (isAdmin) setIsDragOver(true);
@@ -2591,7 +2688,7 @@ export default function Home() {
                   e.preventDefault();
                   setIsDragOver(false);
                   if (!isAdmin) {
-                    alert("Role Simulation View: Only Admin persona is allowed to ingest production data.");
+                    alert("Access Denied: Administrator privileges are required to ingest production data.");
                     return;
                   }
                   const file = e.dataTransfer.files?.[0];
@@ -2600,9 +2697,22 @@ export default function Home() {
                   }
                 }}
               >
-                <span className="material-icons-round dropzone-icon">cloud_upload</span>
-                <p>Drag & Drop or Click to Select Spreadsheet</p>
-                <button type="button">Select File</button>
+                <span className="material-icons-round dropzone-icon">{!isAdmin ? "lock" : "cloud_upload"}</span>
+                <p>{!isAdmin ? "Production Data Ingestion Restricted" : "Drag & Drop or Click to Select Spreadsheet"}</p>
+                <button 
+                  type="button" 
+                  disabled={!isAdmin} 
+                  className={!isAdmin ? "role-restricted-btn" : ""}
+                  title={!isAdmin ? "🔒 You do not have permission to upload files" : "Select File"}
+                >
+                  {!isAdmin ? "Upload Restricted (Admin Only)" : "Select File"}
+                </button>
+                {!isAdmin && (
+                  <div className="dropzone-lock-badge">
+                    <span className="material-icons-round" style={{ fontSize: "0.9rem" }}>admin_panel_settings</span>
+                    <span>Admin Permission Required</span>
+                  </div>
+                )}
                 <input 
                   type="file" 
                   id="file-input" 
@@ -2647,8 +2757,15 @@ export default function Home() {
               </p>
               
               <div 
-                className={`dropzone ${isStockDragOver ? "dragover" : ""}`}
-                onClick={() => document.getElementById("stock-file-input").click()}
+                className={`dropzone ${isStockDragOver ? "dragover" : ""} ${!isAdmin ? "role-restricted-dropzone" : ""}`}
+                title={!isAdmin ? "🔒 Access Restricted: You do not have permission to upload stock inventory (Administrator role required)" : "Drag & drop or click to select stock spreadsheet"}
+                onClick={() => {
+                  if (!isAdmin) {
+                    alert("Access Denied: Administrator privileges are required to ingest stock data.");
+                    return;
+                  }
+                  document.getElementById("stock-file-input").click();
+                }}
                 onDragOver={(e) => {
                   e.preventDefault();
                   if (isAdmin) setIsStockDragOver(true);
@@ -2658,7 +2775,7 @@ export default function Home() {
                   e.preventDefault();
                   setIsStockDragOver(false);
                   if (!isAdmin) {
-                    alert("Role Simulation View: Only Admin persona is allowed to ingest stock data.");
+                    alert("Access Denied: Administrator privileges are required to ingest stock data.");
                     return;
                   }
                   const file = e.dataTransfer.files?.[0];
@@ -2667,9 +2784,25 @@ export default function Home() {
                   }
                 }}
               >
-                <span className="material-icons-round dropzone-icon" style={{ color: "var(--color-accent, #a855f7)" }}>inventory_2</span>
-                <p>Drag & Drop or Click to Select Stock Spreadsheet</p>
-                <button type="button" style={{ background: "var(--color-accent, #a855f7)", borderColor: "var(--color-accent, #a855f7)" }}>Select Stock File</button>
+                <span className="material-icons-round dropzone-icon" style={{ color: "var(--color-accent, #a855f7)" }}>
+                  {!isAdmin ? "lock" : "inventory_2"}
+                </span>
+                <p>{!isAdmin ? "Stock Inventory Ingestion Restricted" : "Drag & Drop or Click to Select Stock Spreadsheet"}</p>
+                <button 
+                  type="button" 
+                  disabled={!isAdmin}
+                  className={!isAdmin ? "role-restricted-btn" : ""}
+                  title={!isAdmin ? "🔒 You do not have permission to upload stock files" : "Select Stock File"}
+                  style={{ background: !isAdmin ? "rgba(0,0,0,0.2)" : "var(--color-accent, #a855f7)", borderColor: !isAdmin ? "transparent" : "var(--color-accent, #a855f7)" }}
+                >
+                  {!isAdmin ? "Stock Upload Restricted (Admin Only)" : "Select Stock File"}
+                </button>
+                {!isAdmin && (
+                  <div className="dropzone-lock-badge">
+                    <span className="material-icons-round" style={{ fontSize: "0.9rem" }}>admin_panel_settings</span>
+                    <span>Admin Permission Required</span>
+                  </div>
+                )}
                 <input 
                   type="file" 
                   id="stock-file-input" 
@@ -2707,22 +2840,22 @@ export default function Home() {
                       type="button" 
                       onClick={() => {
                         if (!isAdmin) {
-                          alert("Role Simulation View: Only Admin persona is allowed to delete records.");
+                          alert("Access Denied: Administrator privileges are required to delete records.");
                           return;
                         }
                         setDeleteConfirmText("");
                         setShowDeleteModal(true);
                       }} 
-                      className="btn btn-danger" 
+                      className={`btn btn-danger ${!isAdmin ? "role-restricted-btn" : ""}`}
                       style={{ 
                         fontSize: "0.82rem", 
                         display: "inline-flex", 
                         alignItems: "center", 
                         gap: "6px",
-                        boxShadow: "0 2px 8px rgba(220, 38, 38, 0.2)"
+                        boxShadow: !isAdmin ? "none" : "0 2px 8px rgba(220, 38, 38, 0.2)"
                       }}
                       disabled={!isAdmin}
-                      title="Permanently wipe all records from database"
+                      title={!isAdmin ? "🔒 Access Restricted: You do not have permission to delete database records (Administrator role required)" : "Permanently wipe all records from database"}
                     >
                       <span className="material-icons-round" style={{ fontSize: "1.1rem" }}>delete_forever</span>
                       Delete All Records
@@ -2876,9 +3009,22 @@ export default function Home() {
             </div>
           )}
 
+          {isViewer && (
+            <div className="role-restricted-notice" style={{ margin: "16px 24px 0" }}>
+              <span className="material-icons-round notice-icon">visibility</span>
+              <div>
+                <span className="notice-title">Viewer Mode (Read-Only):</span>
+                <span>You do not have permission to adjust planning parameters, run calculations, or edit cell targets. All controls are muted.</span>
+              </div>
+            </div>
+          )}
+
           <div className="planning-top-actions" style={{ flexDirection: "column", alignItems: "flex-start", gap: "16px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", flexWrap: "wrap", gap: "16px" }}>
-              <div className="planning-params">
+              <div 
+                className={`planning-params ${isViewer ? "role-restricted" : ""}`}
+                title={isViewer ? "🔒 Read-Only: You do not have permission to modify planning parameters (Viewer role)" : undefined}
+              >
                 <div className="param-input-group">
                   <label style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                     <span className="material-icons-round" style={{ fontSize: "1rem", color: "var(--color-primary)" }}>event</span>
@@ -2890,6 +3036,7 @@ export default function Home() {
                     className="param-select"
                     style={{ fontWeight: "600", minWidth: "120px" }}
                     disabled={isViewer}
+                    title={isViewer ? "🔒 Read-Only: Viewer accounts cannot modify start month" : "Select Start Month"}
                   >
                     {MONTH_NAMES.map((name, idx) => (
                       <option key={name} value={idx + 1}>{name}</option>
@@ -2901,6 +3048,7 @@ export default function Home() {
                     className="param-select"
                     style={{ fontWeight: "600", minWidth: "85px" }}
                     disabled={isViewer}
+                    title={isViewer ? "🔒 Read-Only: Viewer accounts cannot modify start year" : "Select Start Year"}
                   >
                     {[...new Set([...(uniqueYears.length > 0 ? uniqueYears : [2024, 2025, 2026]), 2024, 2025, 2026, 2027, 2028, 2029, 2030])].sort().map(y => (
                       <option key={y} value={y}>{y}</option>
@@ -2916,6 +3064,7 @@ export default function Home() {
                     className="param-input"
                     min="1"
                     disabled={isViewer}
+                    title={isViewer ? "🔒 Read-Only: Viewer accounts cannot modify planning horizon" : "Planning Horizon in Months"}
                   />
                 </div>
                 <div className="param-input-group">
@@ -2927,6 +3076,7 @@ export default function Home() {
                     className="param-input"
                     min="0"
                     disabled={isViewer}
+                    title={isViewer ? "🔒 Read-Only: Viewer accounts cannot modify growth modifier" : "Growth Modifier %"}
                   />
                 </div>
               </div>
@@ -2946,9 +3096,10 @@ export default function Home() {
                 </div>
                 <button 
                   onClick={triggerGeneratePlan} 
-                  className="btn btn-primary" 
+                  className={`btn btn-primary ${isViewer ? "role-restricted-btn" : ""}`} 
                   style={{display: "flex", alignItems: "center", gap: "6px"}}
                   disabled={isViewer || isGeneratingPlan}
+                  title={isViewer ? "🔒 Access Restricted: You do not have permission to generate production plans (Viewer role)" : "Generate Production Plan"}
                 >
                   <span className={`material-icons-round ${isGeneratingPlan ? "spinner-rotate" : ""}`} style={{fontSize: "1.1rem"}}>
                     {isGeneratingPlan ? "autorenew" : "analytics"}
@@ -2958,9 +3109,10 @@ export default function Home() {
                 {activePlan?.status === "Draft" && (
                   <button 
                     onClick={handleApprovePlan} 
-                    className="btn btn-primary" 
-                    style={{background: "var(--color-success)", color: "#fff", display: "flex", alignItems: "center", gap: "6px"}}
+                    className={`btn btn-primary ${!isAdmin ? "role-restricted-btn" : ""}`} 
+                    style={{background: !isAdmin ? "rgba(0,0,0,0.2)" : "var(--color-success)", color: "#fff", display: "flex", alignItems: "center", gap: "6px"}}
                     disabled={!isAdmin}
+                    title={!isAdmin ? "🔒 Access Restricted: You do not have permission to Lock & Approve plans (Administrator role required)" : "Lock & Approve Plan"}
                   >
                     <span className="material-icons-round" style={{fontSize: "1.1rem"}}>lock</span>Lock & Approve
                   </button>
@@ -2974,7 +3126,10 @@ export default function Home() {
               const isOver = totalRatioSum > 100;
               const isInvalid = totalRatioSum !== 100 && totalRatioSum !== 0;
               return (
-                <div className={`ratios-config-panel ${isOver ? "shake-alert warning-flash" : ""}`} style={{
+                <div 
+                  className={`ratios-config-panel ${isOver ? "shake-alert warning-flash" : ""} ${isViewer ? "role-restricted" : ""}`} 
+                  title={isViewer ? "🔒 Read-Only: You do not have permission to modify month dividing ratios (Viewer role)" : undefined}
+                  style={{
                   display: "flex",
                   flexDirection: "column",
                   gap: "8px",
@@ -3050,7 +3205,10 @@ export default function Home() {
             })()}
 
             {/* 2. MINIMUM QUANTITY THRESHOLDS & GAP MONTH PANEL (SECOND / UNDER DIVIDING RATIO) */}
-            <div className="ratios-config-panel" style={{
+            <div 
+              className={`ratios-config-panel ${isViewer ? "role-restricted" : ""}`}
+              title={isViewer ? "🔒 Read-Only: You do not have permission to modify minimum quantity thresholds or gap interval (Viewer role)" : undefined}
+              style={{
               display: "flex",
               flexDirection: "column",
               gap: "12px",
@@ -3275,11 +3433,19 @@ export default function Home() {
                               editingCell.month === parseInt(ym.split("-")[1]) &&
                               editingCell.year === parseInt(ym.split("-")[0]);
 
+                            const isReadOnlyCell = isViewer || activePlan?.status === 'Approved';
+                            const cellTitle = isViewer 
+                              ? "🔒 Read-Only: You do not have permission to edit planned quantities (Viewer role)"
+                              : activePlan?.status === 'Approved'
+                                ? "🔒 Locked: This approved plan cannot be edited"
+                                : "Double-click to manually override quantity";
+
                             return (
                               <td 
                                 key={ym} 
-                                className={`cell-editable ${item?.isManuallyEdited ? "modified" : ""}`}
-                                onDoubleClick={() => item && handleCellDoubleClick(item, item.targetMonth, item.targetYear)}
+                                className={`${isReadOnlyCell ? "cell-readonly" : "cell-editable"} ${item?.isManuallyEdited ? "modified" : ""}`}
+                                title={cellTitle}
+                                onDoubleClick={() => !isReadOnlyCell && item && handleCellDoubleClick(item, item.targetMonth, item.targetYear)}
                               >
                                 {isEditing ? (
                                   <input 
@@ -3760,6 +3926,20 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      {/* USER & PASSWORD MANAGEMENT MODAL (ADMIN ONLY) */}
+      <UserManagementModal
+        isOpen={showUserMgmtModal}
+        onClose={() => setShowUserMgmtModal(false)}
+        currentUser={currentUser}
+      />
+
+      {/* CHANGE MY PASSWORD MODAL */}
+      <ChangePasswordModal
+        isOpen={showChangePasswordModal}
+        onClose={() => setShowChangePasswordModal(false)}
+        currentUser={currentUser}
+      />
 
     </div>
   );
