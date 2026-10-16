@@ -67,6 +67,12 @@ export default function Home() {
   const [stockLastUpdated, setStockLastUpdated] = useState(null);
   const [isStockDragOver, setIsStockDragOver] = useState(false);
 
+  // Pending list state
+  const [pendings, setPendings] = useState({});
+  const [pendingList, setPendingList] = useState([]);
+  const [pendingLastUpdated, setPendingLastUpdated] = useState(null);
+  const [isPendingDragOver, setIsPendingDragOver] = useState(false);
+
   // Sorting state
   const [sortField, setSortField] = useState(null);
   const [sortOrder, setSortOrder] = useState("desc");
@@ -145,10 +151,11 @@ export default function Home() {
       setIsAppLoading(true);
       setShowLoadingScreen(true);
       
-      // Fast parallel fetch of critical plan and inventory stock data
+      // Fast parallel fetch of critical plan, inventory stock, and pending orders data
       await Promise.allSettled([
         fetchPlans(),
-        fetchStocks()
+        fetchStocks(),
+        fetchPendings()
       ]);
 
       setIsAppLoading(false);
@@ -254,6 +261,26 @@ export default function Home() {
       }
     } catch (err) {
       console.error("Error fetching stocks:", err);
+    }
+  };
+
+  const fetchPendings = async () => {
+    try {
+      const res = await fetch('/api/pendings');
+      const data = await res.json();
+      if (data.success) {
+        const pMap = {};
+        (data.pendings || []).forEach(p => {
+          pMap[p.bearingNo] = (pMap[p.bearingNo] || 0) + p.quantity;
+        });
+        setPendings(pMap);
+        setPendingList(data.pendings || []);
+        if (data.lastUpdated) {
+          setPendingLastUpdated(data.lastUpdated);
+        }
+      }
+    } catch (err) {
+      console.error("Error fetching pendings:", err);
     }
   };
 
@@ -1033,34 +1060,62 @@ export default function Home() {
     if (!editingCell || !activePlan) return;
 
     try {
-      const res = await fetch(`/api/plans/${activePlan._id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          unitName: editingCell.unitName,
-          bearingNo: editingCell.bearingNo,
-          category: activePlanItems.find(i => i.bearingNo === editingCell.bearingNo)?.category || "",
-          targetMonth: editingCell.month,
-          targetYear: editingCell.year,
-          plannedQuantity: editValue
-        })
-      });
-      const data = await res.json();
-      if (data.success) {
-        // Update local React state
-        setActivePlanItems(prev => prev.map(item => {
-          if (item.bearingNo === editingCell.bearingNo &&
-              item.unitName === editingCell.unitName &&
-              item.targetMonth === editingCell.month &&
-              item.targetYear === editingCell.year) {
-            return {
-              ...item,
-              plannedQuantity: parseInt(editValue, 10),
-              isManuallyEdited: true
-            };
-          }
-          return item;
-        }));
+      const targetItemsToUpdate = activePlanItems.filter(i => 
+        i.bearingNo === editingCell.bearingNo &&
+        (editingCell.unitName === 'ALL' || i.unitName === editingCell.unitName) &&
+        i.targetMonth === editingCell.month &&
+        i.targetYear === editingCell.year
+      );
+
+      const totalNewQty = parseInt(editValue, 10) || 0;
+
+      if (targetItemsToUpdate.length === 0) {
+        setEditingCell(null);
+        return;
+      }
+
+      const totalOldQty = targetItemsToUpdate.reduce((s, it) => s + (it.plannedQuantity || 0), 0);
+
+      for (let i = 0; i < targetItemsToUpdate.length; i++) {
+        const item = targetItemsToUpdate[i];
+        let newQty = 0;
+        if (targetItemsToUpdate.length === 1) {
+          newQty = totalNewQty;
+        } else if (totalOldQty > 0) {
+          newQty = Math.round((item.plannedQuantity / totalOldQty) * totalNewQty);
+        } else {
+          newQty = Math.floor(totalNewQty / targetItemsToUpdate.length);
+        }
+
+        const res = await fetch(`/api/plans/${activePlan._id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            unitName: item.unitName,
+            bearingNo: item.bearingNo,
+            category: item.category,
+            targetMonth: item.targetMonth,
+            targetYear: item.targetYear,
+            plannedQuantity: newQty
+          })
+        });
+
+        const data = await res.json();
+        if (data.success) {
+          setActivePlanItems(prev => prev.map(pItem => {
+            if (pItem.bearingNo === item.bearingNo &&
+                pItem.unitName === item.unitName &&
+                pItem.targetMonth === item.targetMonth &&
+                pItem.targetYear === item.targetYear) {
+              return {
+                ...pItem,
+                plannedQuantity: newQty,
+                isManuallyEdited: true
+              };
+            }
+            return pItem;
+          }));
+        }
       }
     } catch (err) {
       console.error("Save cell override error:", err);
@@ -1715,6 +1770,170 @@ export default function Home() {
     }
   };
 
+  const handlePendingFileUpload = (e) => {
+    if (!isAdmin) {
+      alert("Access Denied: Administrator privileges are required to ingest pending orders.");
+      return;
+    }
+    const file = e.target.files?.[0];
+    if (!file) return;
+    processPendingFile(file);
+  };
+
+  const processPendingFile = (file) => {
+    setIsUploading(true);
+    setUploadProgress({
+      text: "Parsing pending orders spreadsheet...",
+      percent: 50,
+      remaining: "Validating bearing styles & pending quantities..."
+    });
+    setUploaderErrors([]);
+    const isCsv = file.name.toLowerCase().endsWith(".csv");
+
+    const onParsed = (rawRows) => {
+      try {
+        if (!rawRows || rawRows.length === 0) {
+          alert("The uploaded pending orders file is empty.");
+          setIsUploading(false);
+          setUploadProgress(null);
+          return;
+        }
+
+        const HEADER_MAP = {
+          "bearing no.": "bearingNo", "bearing number": "bearingNo", "bearing no": "bearingNo",
+          "bearing style": "bearingNo", "bearingstyle": "bearingNo", "bearing": "bearingNo",
+          "bearing_no": "bearingNo", "item code": "bearingNo",
+          "quantity": "quantity", "qty.": "quantity", "qty": "quantity", "pending qty": "quantity",
+          "pending quantity": "quantity", "pending": "quantity", "order qty": "quantity",
+          "unit": "unit", "mfg unit": "unit", "depot": "unit", "plant": "unit"
+        };
+
+        const firstRow = rawRows[0] || {};
+        const keyMap = {};
+        Object.keys(firstRow).forEach(rawKey => {
+          const clean = rawKey.trim().toLowerCase();
+          keyMap[rawKey] = HEADER_MAP[clean] || rawKey;
+        });
+
+        const standardizedRows = [];
+        const errors = [];
+
+        rawRows.forEach((rawRow, idx) => {
+          const rowNum = idx + 2;
+          const row = {};
+          for (const rawKey in keyMap) {
+            row[keyMap[rawKey]] = rawRow[rawKey];
+          }
+
+          const bearingNo = String(row["bearingNo"] !== undefined ? row["bearingNo"] : "").trim().toUpperCase();
+          const qtyStr = String(row["quantity"] !== undefined ? row["quantity"] : "").replace(/,/g, "").trim();
+          const quantity = parseInt(qtyStr, 10);
+          const unit = row["unit"] ? String(row["unit"]).trim() : "";
+
+          const rowErrors = [];
+          if (!bearingNo) {
+            rowErrors.push("Bearing No. is required.");
+          }
+          if (isNaN(quantity) || quantity < 0) {
+            rowErrors.push(`Invalid Pending Quantity value: "${qtyStr}". Quantity must be a positive integer.`);
+          }
+
+          if (rowErrors.length > 0) {
+            errors.push({ row: rowNum, bearing: bearingNo || "Unknown", error: rowErrors.join(" | ") });
+          } else {
+            standardizedRows.push({ bearingNo, quantity, unit });
+          }
+        });
+
+        if (errors.length > 0) {
+          setUploaderErrors(errors);
+          setIsUploading(false);
+          setUploadProgress(null);
+          alert(`Validation failed: Detected ${errors.length} error(s) in Pending Orders data.`);
+          return;
+        }
+
+        submitPendingImport(standardizedRows);
+
+      } catch (err) {
+        console.error("Pending row processing error:", err);
+        alert("Error processing pending orders file rows: " + err.message);
+        setIsUploading(false);
+        setUploadProgress(null);
+      }
+    };
+
+    if (isCsv) {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results) => {
+          onParsed(results.data);
+        },
+        error: (err) => {
+          alert("CSV parsing failed: " + err.message);
+          setIsUploading(false);
+          setUploadProgress(null);
+        }
+      });
+    } else {
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        try {
+          const data = new Uint8Array(evt.target.result);
+          const workbook = XLSX.read(data, { type: "array" });
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+          onParsed(jsonData);
+        } catch (err) {
+          alert("Excel parsing failed: " + err.message);
+          setIsUploading(false);
+          setUploadProgress(null);
+        }
+      };
+      reader.onerror = () => {
+        alert("File reading failed.");
+        setIsUploading(false);
+        setUploadProgress(null);
+      };
+      reader.readAsArrayBuffer(file);
+    }
+  };
+
+  const submitPendingImport = async (rowsToUpload) => {
+    setIsUploading(true);
+    setUploadProgress({
+      text: `Syncing ${rowsToUpload.length.toLocaleString()} pending order items...`,
+      percent: 75,
+      remaining: "Updating pending order records..."
+    });
+
+    try {
+      const res = await fetch('/api/pendings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows: rowsToUpload, action: 'overwrite' })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(`Successfully imported pending list! Total pending bearing items: ${data.count || data.modifiedCount}`);
+        if (data.lastUpdated) {
+          setPendingLastUpdated(data.lastUpdated);
+        }
+        await fetchPendings();
+      } else {
+        alert("Failed to ingest pending orders: " + data.error);
+      }
+    } catch (err) {
+      console.error("Pending import error:", err);
+      alert("Pending Import request failed: " + err.message);
+    } finally {
+      setIsUploading(false);
+      setUploadProgress(null);
+    }
+  };
+
   // --- OPERATIONAL REPORTS GENERATOR ---
   const reportData = useMemo(() => {
     let headers = [];
@@ -2027,27 +2246,39 @@ export default function Home() {
     doc.save(`ARB_Report_${activeReport}.pdf`);
   };
 
+  const isAllUnitsSelected = filters.unit.length === 0 || (uniqueUnits.length > 0 && filters.unit.length === uniqueUnits.length);
+
   // --- PLANNING TARGETS GRID CALCULATIONS ---
   // Returns unique keys for products in target items
   const planningProducts = useMemo(() => {
     const prodKeys = {};
     activePlanItems.forEach(item => {
-      // Apply unified filters to targets grid to match operational report views
-      if (filters.unit.length > 0 && !filters.unit.includes(item.unitName)) return;
+      // Apply unified filters to targets grid
+      if (!isAllUnitsSelected && filters.unit.length > 0 && !filters.unit.includes(item.unitName)) return;
       if (filters.category.length > 0 && !filters.category.includes(item.category)) return;
       if (filters.bearingNo && !item.bearingNo.toLowerCase().includes(filters.bearingNo.toLowerCase())) return;
 
-      const key = `${item.bearingNo}|${item.unitName}|${item.category}`;
+      const key = isAllUnitsSelected ? `${item.bearingNo}|${item.category}` : `${item.bearingNo}|${item.unitName}|${item.category}`;
       if (!prodKeys[key]) {
         prodKeys[key] = {
           bearingNo: item.bearingNo,
-          unitName: item.unitName,
+          unitName: isAllUnitsSelected ? 'ALL' : item.unitName,
           category: item.category,
           monthlyTargets: {}
         };
       }
       const ymStr = `${item.targetYear}-${String(item.targetMonth).padStart(2,'0')}`;
-      prodKeys[key].monthlyTargets[ymStr] = item;
+      if (!prodKeys[key].monthlyTargets[ymStr]) {
+        prodKeys[key].monthlyTargets[ymStr] = isAllUnitsSelected ? { ...item, unitName: 'ALL' } : { ...item };
+      } else if (isAllUnitsSelected) {
+        const existing = prodKeys[key].monthlyTargets[ymStr];
+        existing.plannedQuantity += (item.plannedQuantity || 0);
+        existing.originalQuantity += (item.originalQuantity || 0);
+        existing.qtyRecent += (item.qtyRecent || 0);
+        existing.qtyPrevious += (item.qtyPrevious || 0);
+        existing.qtyPending += (item.qtyPending || 0);
+        if (item.isManuallyEdited) existing.isManuallyEdited = true;
+      }
     });
 
     let list = Object.values(prodKeys);
@@ -2093,7 +2324,7 @@ export default function Home() {
       list.sort((a, b) => a.bearingNo.localeCompare(b.bearingNo));
     }
     return list;
-  }, [activePlanItems, filters.unit, filters.category, filters.bearingNo, sortField, sortOrder, stocks]);
+  }, [activePlanItems, filters.unit, filters.category, filters.bearingNo, sortField, sortOrder, stocks, isAllUnitsSelected, uniqueUnits.length]);
 
   const PLANNING_PAGE_SIZE = 50;
 
@@ -2823,6 +3054,79 @@ export default function Home() {
               </div>
             </div>
 
+            <div className="uploader-card" style={{ marginTop: "24px" }}>
+              <h3 style={{fontSize: "1.1rem", borderLeft: "3px solid #f59e0b", paddingLeft: "10px"}}>Ingest Pending Orders List</h3>
+              <p style={{fontSize: "0.85rem", color: "var(--text-muted)"}}>
+                Upload pending orders spreadsheet. Excel headers must include <strong>Bearing No.</strong> and <strong>Qty.</strong> (e.g. 22217 K, 860). Pending quantities are automatically added into production targets.
+              </p>
+              
+              <div 
+                className={`dropzone ${isPendingDragOver ? "dragover" : ""} ${!isAdmin ? "role-restricted-dropzone" : ""}`}
+                title={!isAdmin ? "🔒 Access Restricted: You do not have permission to upload pending orders (Administrator role required)" : "Drag & drop or click to select pending orders spreadsheet"}
+                onClick={() => {
+                  if (!isAdmin) {
+                    alert("Access Denied: Administrator privileges are required to ingest pending orders data.");
+                    return;
+                  }
+                  document.getElementById("pending-file-input").click();
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  if (isAdmin) setIsPendingDragOver(true);
+                }}
+                onDragLeave={() => setIsPendingDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsPendingDragOver(false);
+                  if (!isAdmin) {
+                    alert("Access Denied: Administrator privileges are required to ingest pending orders data.");
+                    return;
+                  }
+                  const file = e.dataTransfer.files?.[0];
+                  if (file) {
+                    processPendingFile(file);
+                  }
+                }}
+              >
+                <span className="material-icons-round dropzone-icon" style={{ color: "#f59e0b" }}>
+                  {!isAdmin ? "lock" : "pending_actions"}
+                </span>
+                <p>{!isAdmin ? "Pending Orders Ingestion Restricted" : "Drag & Drop or Click to Select Pending Orders Spreadsheet"}</p>
+                <button 
+                  type="button" 
+                  disabled={!isAdmin}
+                  className={!isAdmin ? "role-restricted-btn" : ""}
+                  title={!isAdmin ? "🔒 You do not have permission to upload pending files" : "Select Pending File"}
+                  style={{ background: !isAdmin ? "rgba(0,0,0,0.2)" : "#f59e0b", borderColor: !isAdmin ? "transparent" : "#f59e0b" }}
+                >
+                  {!isAdmin ? "Pending Upload Restricted (Admin Only)" : "Select Pending File"}
+                </button>
+                {!isAdmin && (
+                  <div className="dropzone-lock-badge">
+                    <span className="material-icons-round" style={{ fontSize: "0.9rem" }}>admin_panel_settings</span>
+                    <span>Admin Permission Required</span>
+                  </div>
+                )}
+                <input 
+                  type="file" 
+                  id="pending-file-input" 
+                  className="hidden-input" 
+                  accept=".csv, .xlsx, .xls"
+                  onChange={handlePendingFileUpload}
+                  disabled={!isAdmin}
+                />
+              </div>
+
+              <div className="requirements-list">
+                <h5>Pending List Validation Rules:</h5>
+                <ul>
+                  <li>Header must contain <strong>Bearing No.</strong> and <strong>Qty.</strong> (or Quantity, Pending Qty).</li>
+                  <li>Pending quantities are automatically included in total production targets during planning generation.</li>
+                  <li>Last Configured: <strong>{pendingLastUpdated ? new Date(pendingLastUpdated).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Not Configured'}</strong> ({Object.keys(pendings).length} unique bearings with pending orders).</li>
+                </ul>
+              </div>
+            </div>
+
             <div className="preview-card">
               <div className="preview-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px", borderBottom: "1px solid var(--border-color)", paddingBottom: "14px", marginBottom: "16px" }}>
                 <div>
@@ -3370,6 +3674,7 @@ export default function Home() {
                     {renderSortHeader('stock', 'Stock', {textAlign: "center", color: "var(--color-accent, #a855f7)"})}
                     <th style={{textAlign: "center", color: "var(--color-primary, #8b5cf6)"}}>CY Baseline ({planningPeriod}m)</th>
                     <th style={{textAlign: "center", color: "var(--color-primary, #8b5cf6)"}}>PY Baseline ({planningPeriod}m)</th>
+                    <th style={{textAlign: "center", color: "#f59e0b"}}>Pending Qty</th>
                     {planningMonthsList.map(ym => {
                       const [y, m] = ym.split("-");
                       return <th key={ym} style={{textAlign: "center"}}>{MONTH_NAMES[parseInt(m)-1].substring(0,3)} {y}</th>;
@@ -3380,7 +3685,7 @@ export default function Home() {
                 <tbody>
                   {paginatedProducts.length === 0 ? (
                     <tr>
-                      <td colSpan={planningMonthsList.length + 7} className="empty-state">No target grids matching filters. Generate plan.</td>
+                      <td colSpan={planningMonthsList.length + 8} className="empty-state">No target grids matching filters. Generate plan.</td>
                     </tr>
                   ) : (
                     paginatedProducts.map((p, idx) => {
@@ -3388,6 +3693,9 @@ export default function Home() {
                       const firstTarget = Object.values(p.monthlyTargets)[0];
                       const qtyRecent = firstTarget ? (firstTarget.qtyRecent || 0) : 0;
                       const qtyPrevious = firstTarget ? (firstTarget.qtyPrevious || 0) : 0;
+                      const qtyPending = pendings[p.bearingNo] !== undefined 
+                        ? pendings[p.bearingNo] 
+                        : (firstTarget ? (firstTarget.qtyPending || 0) : 0);
                       
                       const hasData = qtyRecent > 0 || qtyPrevious > 0;
                       const isRecentWinner = hasData && qtyRecent >= qtyPrevious;
@@ -3421,6 +3729,14 @@ export default function Home() {
                             background: isPreviousWinner ? "rgba(16, 185, 129, 0.05)" : "transparent"
                           }}>
                             {qtyPrevious.toLocaleString()}
+                          </td>
+                          <td style={{
+                            textAlign: "center", 
+                            fontWeight: qtyPending > 0 ? "700" : "400",
+                            color: qtyPending > 0 ? "#f59e0b" : "var(--text-muted)",
+                            background: qtyPending > 0 ? "rgba(245, 158, 11, 0.08)" : "transparent"
+                          }}>
+                            {qtyPending.toLocaleString()}
                           </td>
                           {planningMonthsList.map((ym, monthIdx) => {
                             const item = p.monthlyTargets[ym];

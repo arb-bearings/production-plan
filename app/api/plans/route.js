@@ -3,6 +3,7 @@ import dbConnect from '@/lib/db';
 import Record from '@/models/Record';
 import ProductionPlan from '@/models/ProductionPlan';
 import PlanItem from '@/models/PlanItem';
+import Pending from '@/models/Pending';
 import { calculateRollingBaseline, applyBatchRedistribution, MONTH_NAMES } from '@/lib/planning-engine';
 
 export async function GET(request) {
@@ -16,7 +17,8 @@ export async function GET(request) {
       console.log("No plans found, generating default initial plan...");
       
       const records = await Record.find({}).lean();
-      if (records.length === 0) {
+      const pendings = await Pending.find({}).lean();
+      if (records.length === 0 && pendings.length === 0) {
         return NextResponse.json({ success: true, plan: null, items: [] });
       }
 
@@ -33,10 +35,10 @@ export async function GET(request) {
         startYear += 1;
       }
       const growthRate = 15;
-      const N = Math.min(6, Math.max(1, monthsInLatestYear.length));
+      const N = Math.min(6, Math.max(1, monthsInLatestYear.length || 6));
 
       // 1. Compute baseline and target redistribution first
-      const baselineResult = calculateRollingBaseline(records, startMonth, startYear, N, growthRate, true);
+      const baselineResult = calculateRollingBaseline(records, pendings, startMonth, startYear, N, growthRate, true);
       if (!baselineResult.success) {
         return NextResponse.json({ success: true, plan: null, items: [] });
       }
@@ -116,6 +118,8 @@ export async function POST(request) {
       dividingRatios = []
     } = body;
 
+    const parsedGrowthRate = parseFloat(growthRate) !== undefined && !isNaN(parseFloat(growthRate)) ? parseFloat(growthRate) : 20;
+
     let sMonth = parseInt(startMonth, 10);
     let sYear = parseInt(startYear, 10);
     if (isNaN(sMonth) || sMonth < 1 || sMonth > 12) {
@@ -157,12 +161,13 @@ export async function POST(request) {
     }
 
     const records = await Record.find({}).lean();
-    if (records.length === 0) {
-      return NextResponse.json({ success: false, error: "No actual production records found to plan from." }, { status: 400 });
+    const pendings = await Pending.find({}).lean();
+    if (records.length === 0 && pendings.length === 0) {
+      return NextResponse.json({ success: false, error: "No actual production records or pending orders found to plan from." }, { status: 400 });
     }
 
     // 1. Compute rolling baseline
-    const baselineResult = calculateRollingBaseline(records, sMonth, sYear, planningPeriod, growthRate, true);
+    const baselineResult = calculateRollingBaseline(records, pendings, sMonth, sYear, planningPeriod, parsedGrowthRate, true);
     if (!baselineResult.success) {
       return NextResponse.json({ 
         success: false, 
@@ -191,7 +196,7 @@ export async function POST(request) {
     // 3. Create Draft plan header with comparison details
     const draftPlan = await ProductionPlan.create({
       status: 'Draft',
-      growthRate,
+      growthRate: parsedGrowthRate,
       planningPeriod,
       startMonth: sMonth,
       startYear: sYear,
