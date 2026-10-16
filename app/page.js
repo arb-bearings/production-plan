@@ -1804,6 +1804,7 @@ export default function Home() {
           "bearing style": "bearingNo", "bearingstyle": "bearingNo", "bearing": "bearingNo",
           "bearing_no": "bearingNo", "item code": "bearingNo",
           "quantity": "quantity", "qty.": "quantity", "qty": "quantity", "pending qty": "quantity",
+          "pending qty.": "quantity",
           "pending quantity": "quantity", "pending": "quantity", "order qty": "quantity",
           "unit": "unit", "mfg unit": "unit", "depot": "unit", "plant": "unit"
         };
