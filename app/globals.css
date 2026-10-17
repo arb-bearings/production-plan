@@ -934,6 +934,16 @@ body.dark-theme .btn-secondary:hover {
   z-index: 5;
 }
 
+.grid-table tfoot td {
+  background: var(--bg-surface-opaque);
+  color: var(--text-main);
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  border-top: 2px solid var(--border-color);
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.05);
+}
+
 .grid-table tr:hover {
   background: rgba(0, 0, 0, 0.02);
 }

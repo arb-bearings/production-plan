@@ -117,6 +117,8 @@ export default function Home() {
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
   const [planningPage, setPlanningPage] = useState(1);
+  const [targetSearch, setTargetSearch] = useState("");
+  const [targetCategoryFilter, setTargetCategoryFilter] = useState("");
   const [isAppLoading, setIsAppLoading] = useState(true);
   const [showLoadingScreen, setShowLoadingScreen] = useState(true);
   const [loadingStatus, setLoadingStatus] = useState("Initializing ARB Bearings Workspace...");
@@ -136,7 +138,7 @@ export default function Home() {
 
   useEffect(() => {
     setPlanningPage(1);
-  }, [filters, activePlanItems]);
+  }, [filters, activePlanItems, targetSearch, targetCategoryFilter]);
 
   const handleTabSwitch = (tabName) => {
     setActiveTab(tabName);
@@ -2249,15 +2251,33 @@ export default function Home() {
 
   const isAllUnitsSelected = filters.unit.length === 0 || (uniqueUnits.length > 0 && filters.unit.length === uniqueUnits.length);
 
+  // Available categories in the current active plan for target grid quick-filter
+  const targetGridCategories = useMemo(() => {
+    if (!activePlanItems || activePlanItems.length === 0) return [];
+    return [...new Set(activePlanItems.map(item => item.category).filter(Boolean))].sort();
+  }, [activePlanItems]);
+
   // --- PLANNING TARGETS GRID CALCULATIONS ---
   // Returns unique keys for products in target items
   const planningProducts = useMemo(() => {
     const prodKeys = {};
+    const searchClean = (targetSearch || "").trim().toLowerCase();
+
     activePlanItems.forEach(item => {
       // Apply unified filters to targets grid
       if (!isAllUnitsSelected && filters.unit.length > 0 && !filters.unit.includes(item.unitName)) return;
       if (filters.category.length > 0 && !filters.category.includes(item.category)) return;
       if (filters.bearingNo && !item.bearingNo.toLowerCase().includes(filters.bearingNo.toLowerCase())) return;
+
+      // Local grid category filter
+      if (targetCategoryFilter && item.category !== targetCategoryFilter) return;
+
+      // Local grid search filter: matches bearing number OR category
+      if (searchClean) {
+        const matchBearing = item.bearingNo && item.bearingNo.toLowerCase().includes(searchClean);
+        const matchCat = item.category && item.category.toLowerCase().includes(searchClean);
+        if (!matchBearing && !matchCat) return;
+      }
 
       const key = isAllUnitsSelected ? `${item.bearingNo}|${item.category}` : `${item.bearingNo}|${item.unitName}|${item.category}`;
       if (!prodKeys[key]) {
@@ -2325,7 +2345,7 @@ export default function Home() {
       list.sort((a, b) => a.bearingNo.localeCompare(b.bearingNo));
     }
     return list;
-  }, [activePlanItems, filters.unit, filters.category, filters.bearingNo, sortField, sortOrder, stocks, isAllUnitsSelected, uniqueUnits.length]);
+  }, [activePlanItems, filters.unit, filters.category, filters.bearingNo, targetSearch, targetCategoryFilter, sortField, sortOrder, stocks, isAllUnitsSelected, uniqueUnits.length]);
 
   const PLANNING_PAGE_SIZE = 50;
 
@@ -2346,6 +2366,140 @@ export default function Home() {
   const planningMonthsList = useMemo(() => {
     return [...new Set(activePlanItems.map(item => `${item.targetYear}-${String(item.targetMonth).padStart(2,'0')}`))].sort();
   }, [activePlanItems]);
+
+  // Overall column totals for the currently filtered target grid products
+  const targetGridTotals = useMemo(() => {
+    let totalStock = 0;
+    let totalRecent = 0;
+    let totalPrevious = 0;
+    let totalPending = 0;
+    const monthTotals = {};
+    planningMonthsList.forEach(ym => { monthTotals[ym] = 0; });
+    let totalSumTarget = 0;
+
+    planningProducts.forEach(p => {
+      const firstTarget = Object.values(p.monthlyTargets)[0];
+      const qtyRecent = firstTarget ? (firstTarget.qtyRecent || 0) : 0;
+      const qtyPrevious = firstTarget ? (firstTarget.qtyPrevious || 0) : 0;
+      const qtyPending = pendings[p.bearingNo] !== undefined 
+        ? pendings[p.bearingNo] 
+        : (firstTarget ? (firstTarget.qtyPending || 0) : 0);
+      const stockVal = stocks[p.bearingNo] !== undefined ? stocks[p.bearingNo] : 0;
+
+      totalStock += stockVal;
+      totalRecent += qtyRecent;
+      totalPrevious += qtyPrevious;
+      totalPending += qtyPending;
+
+      planningMonthsList.forEach(ym => {
+        const item = p.monthlyTargets[ym];
+        const qty = item ? (item.plannedQuantity || 0) : 0;
+        monthTotals[ym] = (monthTotals[ym] || 0) + qty;
+        totalSumTarget += qty;
+      });
+    });
+
+    return {
+      totalStock,
+      totalRecent,
+      totalPrevious,
+      totalPending,
+      monthTotals,
+      totalSumTarget
+    };
+  }, [planningProducts, planningMonthsList, pendings, stocks]);
+
+  // Export current target grid (exact table) to Excel
+  const exportProductionTargetGridExcel = () => {
+    if (!planningProducts || planningProducts.length === 0) {
+      alert("No production target rows available to export.");
+      return;
+    }
+
+    // 1. Headers matching the exact table in the Production Target Grid
+    const headers = [
+      "Bearing style",
+      "Category",
+      "Mfg unit",
+      "Stock",
+      `CY Baseline (${planningPeriod}m)`,
+      `PY Baseline (${planningPeriod}m)`,
+      "Pending Qty",
+      ...planningMonthsList.map(ym => {
+        const [y, m] = ym.split("-");
+        return `${MONTH_NAMES[parseInt(m) - 1].substring(0, 3)} ${y}`;
+      }),
+      "Sum Target"
+    ];
+
+    // 2. Exact table row values
+    const rows = planningProducts.map(p => {
+      let rowSum = 0;
+      const firstTarget = Object.values(p.monthlyTargets)[0];
+      const qtyRecent = firstTarget ? (firstTarget.qtyRecent || 0) : 0;
+      const qtyPrevious = firstTarget ? (firstTarget.qtyPrevious || 0) : 0;
+      const qtyPending = pendings[p.bearingNo] !== undefined 
+        ? pendings[p.bearingNo] 
+        : (firstTarget ? (firstTarget.qtyPending || 0) : 0);
+      const stockVal = stocks[p.bearingNo] !== undefined ? stocks[p.bearingNo] : 0;
+
+      const monthlyValues = planningMonthsList.map(ym => {
+        const item = p.monthlyTargets[ym];
+        const qty = item ? (item.plannedQuantity || 0) : 0;
+        rowSum += qty;
+        return qty;
+      });
+
+      return [
+        p.bearingNo,
+        p.category || "",
+        p.unitName || "",
+        stockVal,
+        qtyRecent,
+        qtyPrevious,
+        qtyPending,
+        ...monthlyValues,
+        rowSum
+      ];
+    });
+
+    // 3. Summary totals row matching the table totals
+    const totalRow = [
+      `Total (${planningProducts.length} items)`,
+      "",
+      "",
+      targetGridTotals.totalStock,
+      targetGridTotals.totalRecent,
+      targetGridTotals.totalPrevious,
+      targetGridTotals.totalPending,
+      ...planningMonthsList.map(ym => targetGridTotals.monthTotals[ym] || 0),
+      targetGridTotals.totalSumTarget
+    ];
+
+    const wsData = [headers, ...rows, totalRow];
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+    // Apply auto-fitted column widths for a clean presentation
+    ws['!cols'] = [
+      { wch: 18 }, // Bearing style
+      { wch: 22 }, // Category
+      { wch: 12 }, // Mfg unit
+      { wch: 12 }, // Stock
+      { wch: 18 }, // CY Baseline
+      { wch: 18 }, // PY Baseline
+      { wch: 14 }, // Pending Qty
+      ...planningMonthsList.map(() => ({ wch: 12 })), // Month cols
+      { wch: 14 }  // Sum Target
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Production Targets");
+
+    const planName = activePlan?.name 
+      ? activePlan.name.replace(/[^a-zA-Z0-9_-]/g, '_')
+      : `Plan_${startYear}_${startMonth}`;
+    XLSX.writeFile(wb, `ARB_Production_Targets_${planName}_${planningPeriod}M.xlsx`);
+  };
 
   const getPlanningMonths = (period, sMonth = startMonth, sYear = startYear) => {
     const monthsList = [];
@@ -3665,13 +3819,180 @@ export default function Home() {
               </span>
             </div>
 
+            {/* TARGET GRID TOOLBAR: SEARCH & EXCEL EXPORT */}
+            <div className="planning-grid-toolbar" style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: "12px",
+              marginBottom: "16px",
+              padding: "12px 16px",
+              background: "var(--bg-surface-opaque, rgba(255, 255, 255, 0.03))",
+              borderRadius: "8px",
+              border: "1px solid var(--border-color, rgba(255, 255, 255, 0.08))"
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", flex: "1 1 500px" }}>
+                {/* Search Input Box */}
+                <div style={{ position: "relative", minWidth: "260px", flex: "1 1 280px" }}>
+                  <span className="material-icons-round" style={{
+                    position: "absolute",
+                    left: "10px",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    color: "var(--text-muted)",
+                    fontSize: "1.1rem",
+                    pointerEvents: "none"
+                  }}>
+                    search
+                  </span>
+                  <input 
+                    type="text"
+                    value={targetSearch}
+                    onChange={(e) => {
+                      setTargetSearch(e.target.value);
+                      setPlanningPage(1);
+                    }}
+                    placeholder="Search bearing number or category..."
+                    style={{
+                      width: "100%",
+                      padding: "8px 32px 8px 34px",
+                      fontSize: "0.85rem",
+                      background: "var(--bg-input, rgba(255, 255, 255, 0.05))",
+                      border: "1px solid var(--border-color, rgba(255, 255, 255, 0.15))",
+                      borderRadius: "6px",
+                      color: "var(--text-main)",
+                      outline: "none"
+                    }}
+                  />
+                  {targetSearch && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTargetSearch("");
+                        setPlanningPage(1);
+                      }}
+                      title="Clear search"
+                      style={{
+                        position: "absolute",
+                        right: "8px",
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        background: "transparent",
+                        border: "none",
+                        color: "var(--text-muted)",
+                        cursor: "pointer",
+                        padding: 0,
+                        display: "flex",
+                        alignItems: "center"
+                      }}
+                    >
+                      <span className="material-icons-round" style={{ fontSize: "1rem" }}>close</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Category Quick Filter Dropdown */}
+                <div style={{ minWidth: "170px" }}>
+                  <select
+                    value={targetCategoryFilter}
+                    onChange={(e) => {
+                      setTargetCategoryFilter(e.target.value);
+                      setPlanningPage(1);
+                    }}
+                    style={{
+                      width: "100%",
+                      padding: "8px 10px",
+                      fontSize: "0.85rem",
+                      background: "var(--bg-input, rgba(255, 255, 255, 0.05))",
+                      border: "1px solid var(--border-color, rgba(255, 255, 255, 0.15))",
+                      borderRadius: "6px",
+                      color: "var(--text-main)",
+                      outline: "none",
+                      cursor: "pointer"
+                    }}
+                  >
+                    <option value="">All Categories ({targetGridCategories.length})</option>
+                    {targetGridCategories.map(cat => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Count Badge */}
+                <span style={{
+                  fontSize: "0.78rem",
+                  color: (targetSearch || targetCategoryFilter) ? "var(--color-primary, #8b5cf6)" : "var(--text-muted)",
+                  fontWeight: (targetSearch || targetCategoryFilter) ? "600" : "400",
+                  padding: "4px 8px",
+                  borderRadius: "4px",
+                  background: (targetSearch || targetCategoryFilter) ? "rgba(139, 92, 246, 0.1)" : "transparent",
+                  whiteSpace: "nowrap"
+                }}>
+                  {planningProducts.length} bearing{planningProducts.length === 1 ? "" : "s"}
+                  {(targetSearch || targetCategoryFilter) && " matched"}
+                </span>
+
+                {(targetSearch || targetCategoryFilter) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTargetSearch("");
+                      setTargetCategoryFilter("");
+                      setPlanningPage(1);
+                    }}
+                    style={{
+                      fontSize: "0.75rem",
+                      background: "none",
+                      border: "none",
+                      color: "var(--text-muted)",
+                      cursor: "pointer",
+                      textDecoration: "underline",
+                      padding: "2px 4px"
+                    }}
+                  >
+                    Reset filters
+                  </button>
+                )}
+              </div>
+
+              {/* Export to Excel Button */}
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <button
+                  type="button"
+                  onClick={exportProductionTargetGridExcel}
+                  disabled={planningProducts.length === 0}
+                  className="btn"
+                  title={planningProducts.length === 0 ? "No records to export" : `Export exact table (${planningProducts.length} bearings) to Excel (.xlsx)`}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "8px 14px",
+                    fontSize: "0.85rem",
+                    fontWeight: "600",
+                    borderRadius: "6px",
+                    background: planningProducts.length === 0 ? "rgba(255,255,255,0.05)" : "rgba(16, 185, 129, 0.15)",
+                    color: planningProducts.length === 0 ? "var(--text-muted)" : "var(--color-success, #10b981)",
+                    border: `1px solid ${planningProducts.length === 0 ? "var(--border-color)" : "rgba(16, 185, 129, 0.4)"}`,
+                    cursor: planningProducts.length === 0 ? "not-allowed" : "pointer",
+                    boxShadow: planningProducts.length === 0 ? "none" : "0 2px 8px rgba(16, 185, 129, 0.15)",
+                    transition: "all 0.2s ease"
+                  }}
+                >
+                  <span className="material-icons-round" style={{ fontSize: "1.1rem" }}>file_download</span>
+                  <span>Export to Excel</span>
+                </button>
+              </div>
+            </div>
+
             <div className="grid-table-container">
               <table className="grid-table">
                 <thead>
                   <tr>
-                    <th>Bearing style</th>
-                    <th>Category</th>
-                    <th>Mfg unit</th>
+                    {renderSortHeader('bearingNo', 'Bearing style')}
+                    {renderSortHeader('category', 'Category')}
+                    {renderSortHeader('unitName', 'Mfg unit')}
                     {renderSortHeader('stock', 'Stock', {textAlign: "center", color: "var(--color-accent, #a855f7)"})}
                     <th style={{textAlign: "center", color: "var(--color-primary, #8b5cf6)"}}>CY Baseline ({planningPeriod}m)</th>
                     <th style={{textAlign: "center", color: "var(--color-primary, #8b5cf6)"}}>PY Baseline ({planningPeriod}m)</th>
@@ -3686,7 +4007,11 @@ export default function Home() {
                 <tbody>
                   {paginatedProducts.length === 0 ? (
                     <tr>
-                      <td colSpan={planningMonthsList.length + 8} className="empty-state">No target grids matching filters. Generate plan.</td>
+                      <td colSpan={planningMonthsList.length + 8} className="empty-state">
+                        {targetSearch || targetCategoryFilter 
+                          ? `No target bearings matching "${targetSearch || targetCategoryFilter}". Try clearing your search.`
+                          : "No target grids matching filters. Generate plan."}
+                      </td>
                     </tr>
                   ) : (
                     paginatedProducts.map((p, idx) => {
@@ -3790,6 +4115,44 @@ export default function Home() {
                     })
                   )}
                 </tbody>
+                {paginatedProducts.length > 0 && (
+                  <tfoot>
+                    <tr style={{
+                      fontWeight: 700,
+                      background: "var(--bg-surface-opaque, rgba(255, 255, 255, 0.05))",
+                      borderTop: "2px solid var(--border-color, rgba(255, 255, 255, 0.15))"
+                    }}>
+                      <td style={{ fontWeight: 700 }}>Total ({planningProducts.length} items)</td>
+                      <td></td>
+                      <td></td>
+                      <td style={{
+                        textAlign: "center",
+                        fontWeight: "700",
+                        color: "var(--color-accent, #a855f7)",
+                        background: "rgba(168, 85, 247, 0.08)"
+                      }}>
+                        {targetGridTotals.totalStock.toLocaleString()}
+                      </td>
+                      <td style={{ textAlign: "center", fontWeight: "700", color: "var(--color-primary, #8b5cf6)" }}>
+                        {targetGridTotals.totalRecent.toLocaleString()}
+                      </td>
+                      <td style={{ textAlign: "center", fontWeight: "700", color: "var(--color-primary, #8b5cf6)" }}>
+                        {targetGridTotals.totalPrevious.toLocaleString()}
+                      </td>
+                      <td style={{ textAlign: "center", fontWeight: "700", color: "#f59e0b" }}>
+                        {targetGridTotals.totalPending.toLocaleString()}
+                      </td>
+                      {planningMonthsList.map(ym => (
+                        <td key={ym} style={{ textAlign: "center", fontWeight: "700" }}>
+                          {(targetGridTotals.monthTotals[ym] || 0).toLocaleString()}
+                        </td>
+                      ))}
+                      <td style={{ textAlign: "center", fontWeight: "800", color: "var(--color-primary, #8b5cf6)" }}>
+                        {targetGridTotals.totalSumTarget.toLocaleString()}
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
               </table>
             </div>
 
