@@ -12,6 +12,7 @@ import LoginPage from '@/components/LoginPage';
 import HeaderUserMenu from '@/components/HeaderUserMenu';
 import UserManagementModal from '@/components/UserManagementModal';
 import ChangePasswordModal from '@/components/ChangePasswordModal';
+import ConfigureDispatchesModal from '@/components/ConfigureDispatchesModal';
 
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -61,6 +62,22 @@ export default function Home() {
   const [planningError, setPlanningError] = useState(null);
   const [isGeneratingPlan, setIsGeneratingPlan] = useState(false);
   const [isRecordsLoading, setIsRecordsLoading] = useState(true);
+  
+  // Dispatch Planning state
+  const [dispatchPlan, setDispatchPlan] = useState(null);
+  const [dispatchPlanItems, setDispatchPlanItems] = useState([]);
+  const [dispatchFeasibleMonths, setDispatchFeasibleMonths] = useState([]);
+  const [selectedDispatchMonth, setSelectedDispatchMonth] = useState(() => new Date().getMonth() + 1);
+  const [selectedDispatchYear, setSelectedDispatchYear] = useState(() => new Date().getFullYear());
+  const [dispatchGrowthRate, setDispatchGrowthRate] = useState(20);
+  const [dispatchComparisonMonths, setDispatchComparisonMonths] = useState([]);
+  const [isConfigureDispatchesOpen, setIsConfigureDispatchesOpen] = useState(false);
+  const [isGeneratingDispatch, setIsGeneratingDispatch] = useState(false);
+  const [dispatchError, setDispatchError] = useState(null);
+  const [dispatchSearch, setDispatchSearch] = useState('');
+  const [dispatchPage, setDispatchPage] = useState(1);
+  const [dispatchSortField, setDispatchSortField] = useState('netDispatchTarget');
+  const [dispatchSortOrder, setDispatchSortOrder] = useState('desc');
 
   // Stocks state
   const [stocks, setStocks] = useState({});
@@ -142,6 +159,9 @@ export default function Home() {
 
   const handleTabSwitch = (tabName) => {
     setActiveTab(tabName);
+    if (tabName === "dispatch") {
+      fetchDispatchPlans();
+    }
   };
 
   // Refs for Chart instances to safely destroy on update
@@ -153,11 +173,12 @@ export default function Home() {
       setIsAppLoading(true);
       setShowLoadingScreen(true);
       
-      // Fast parallel fetch of critical plan, inventory stock, and pending orders data
+      // Fast parallel fetch of critical plan, inventory stock, pending orders, and dispatch plans data
       await Promise.allSettled([
         fetchPlans(),
         fetchStocks(),
-        fetchPendings()
+        fetchPendings(),
+        fetchDispatchPlans()
       ]);
 
       setIsAppLoading(false);
@@ -227,6 +248,8 @@ export default function Home() {
     setPlans([]);
     setActivePlan(null);
     setActivePlanItems([]);
+    setDispatchPlan(null);
+    setDispatchPlanItems([]);
   };
 
   const fetchRecords = async () => {
@@ -314,6 +337,39 @@ export default function Home() {
       }
     } catch (err) {
       console.error("Error fetching active plan:", err);
+    }
+  };
+
+  const fetchDispatchPlans = async (planId = null) => {
+    try {
+      const now = new Date();
+      const currentM = now.getMonth() + 1;
+      const currentY = now.getFullYear();
+      const url = planId 
+        ? `/api/dispatch-plans?id=${planId}&baseMonth=${currentM}&baseYear=${currentY}` 
+        : `/api/dispatch-plans?baseMonth=${currentM}&baseYear=${currentY}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.success) {
+        if (data.plan) {
+          setDispatchPlan(data.plan);
+          setDispatchPlanItems(data.items || []);
+          setSelectedDispatchMonth(data.plan.targetMonth);
+          setSelectedDispatchYear(data.plan.targetYear);
+          setDispatchGrowthRate(data.plan.growthRate || 20);
+          setDispatchComparisonMonths(data.comparisonMonths || []);
+        }
+        if (Array.isArray(data.feasibleMonths)) {
+          setDispatchFeasibleMonths(data.feasibleMonths);
+          if (!data.plan && data.feasibleMonths.length > 0) {
+            const currentOption = data.feasibleMonths.find(fm => fm.isCurrentMonth || fm.offset === 0) || data.feasibleMonths[0];
+            setSelectedDispatchMonth(currentOption.monthNum);
+            setSelectedDispatchYear(currentOption.year);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Error fetching dispatch plan:", err);
     }
   };
 
@@ -1038,6 +1094,80 @@ export default function Home() {
       }
     } catch (err) {
       console.error("Approve plan error:", err);
+    }
+  };
+
+  // --- AUTOMATED DISPATCH PLANNING ENGINE CALL ---
+  const triggerGenerateDispatchPlan = async () => {
+    if (isViewer) {
+      alert("Access Denied: Viewer accounts have read-only permissions.");
+      return;
+    }
+
+    if (!selectedDispatchMonth || !selectedDispatchYear) {
+      alert("Please select a valid target month for dispatch planning.");
+      return;
+    }
+
+    setDispatchError(null);
+    setIsGeneratingDispatch(true);
+
+    try {
+      const res = await fetch('/api/dispatch-plans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetMonth: selectedDispatchMonth,
+          targetYear: selectedDispatchYear,
+          growthRate: dispatchGrowthRate
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setDispatchError(null);
+        setDispatchPlan(data.plan);
+        setDispatchPlanItems(data.items || []);
+        setDispatchComparisonMonths(data.comparisonMonths || []);
+        alert(`Draft Dispatch Plan generated successfully for ${MONTH_NAMES[data.plan.targetMonth - 1]} ${data.plan.targetYear}!`);
+      } else {
+        setDispatchError(data.error || "Failed to generate dispatch plan.");
+      }
+    } catch (err) {
+      console.error("Generate dispatch plan error:", err);
+      setDispatchError("Network or server error while generating dispatch plan.");
+    } finally {
+      setIsGeneratingDispatch(false);
+    }
+  };
+
+  const handleApproveDispatchPlan = async () => {
+    if (!isAdmin) {
+      alert("Access Denied: Administrator privileges are required to Lock & Approve dispatch plans.");
+      return;
+    }
+    if (!dispatchPlan) return;
+
+    try {
+      const res = await fetch(`/api/dispatch-plans/${dispatchPlan._id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'approve',
+          approvedBy: currentUser?.username || 'admin'
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setDispatchPlan(prev => ({
+          ...prev,
+          status: 'Approved',
+          approvedBy: currentUser?.username || 'admin',
+          approvedAt: new Date().toISOString()
+        }));
+        alert("Dispatch plan locked and approved successfully!");
+      }
+    } catch (err) {
+      console.error("Approve dispatch plan error:", err);
     }
   };
 
@@ -2501,6 +2631,110 @@ export default function Home() {
     XLSX.writeFile(wb, `ARB_Production_Targets_${planName}_${planningPeriod}M.xlsx`);
   };
 
+  // --- DISPATCH PLANNING FILTERED ITEMS & EXPORT ---
+  const filteredDispatchItems = useMemo(() => {
+    let list = [...dispatchPlanItems];
+    const searchClean = (dispatchSearch || "").trim().toLowerCase();
+
+    // Unified filters
+    if (!isAllUnitsSelected && filters.unit.length > 0) {
+      list = list.filter(item => filters.unit.includes(item.depot));
+    }
+    if (filters.category.length > 0) {
+      list = list.filter(item => filters.category.includes(item.category));
+    }
+    if (filters.bearingNo) {
+      list = list.filter(item => item.bearingNo.toLowerCase().includes(filters.bearingNo.toLowerCase()));
+    }
+    if (searchClean) {
+      list = list.filter(item => 
+        (item.bearingNo && item.bearingNo.toLowerCase().includes(searchClean)) ||
+        (item.category && item.category.toLowerCase().includes(searchClean)) ||
+        (item.depot && item.depot.toLowerCase().includes(searchClean))
+      );
+    }
+
+    if (dispatchSortField) {
+      list.sort((a, b) => {
+        let valA = a[dispatchSortField];
+        let valB = b[dispatchSortField];
+        if (typeof valA === 'string') {
+          return dispatchSortOrder === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+        }
+        return dispatchSortOrder === 'asc' ? (valA || 0) - (valB || 0) : (valB || 0) - (valA || 0);
+      });
+    }
+
+    return list;
+  }, [dispatchPlanItems, filters.unit, filters.category, filters.bearingNo, isAllUnitsSelected, dispatchSearch, dispatchSortField, dispatchSortOrder]);
+
+  const DISPATCH_PAGE_SIZE = 50;
+  const paginatedDispatchItems = useMemo(() => {
+    const start = (dispatchPage - 1) * DISPATCH_PAGE_SIZE;
+    return filteredDispatchItems.slice(start, start + DISPATCH_PAGE_SIZE);
+  }, [filteredDispatchItems, dispatchPage]);
+
+  const exportDispatchToExcel = () => {
+    if (!filteredDispatchItems || filteredDispatchItems.length === 0) {
+      alert("No dispatch plan items available to export.");
+      return;
+    }
+
+    const mLabels = dispatchComparisonMonths.map(m => m.label);
+    const headers = [
+      "Bearing style",
+      "Category",
+      "Depot / Unit",
+      "Stock",
+      mLabels[0] || "M1 (CY M-2)",
+      mLabels[1] || "M2 (CY M-1)",
+      mLabels[2] || "M3 (PY M-1)",
+      mLabels[3] || "M4 (PY M)",
+      `Growth Qty (+${dispatchPlan?.growthRate || 20}%)`,
+      "Pending Qty",
+      "Net Dispatch Target",
+      "Dispatch 1",
+      "Dispatch 2",
+      "Dispatch 3",
+      "Dispatch 4"
+    ];
+
+    const rows = filteredDispatchItems.map(item => {
+      const allocatedStock = item.stockQty || 0;
+      return [
+        item.bearingNo,
+        item.category,
+        item.depot,
+        allocatedStock,
+        item.m1Sales || 0,
+        item.m2Sales || 0,
+        item.m3Sales || 0,
+        item.m4Sales || 0,
+        item.growthQty || 0,
+        item.pendingQty || 0,
+        item.netDispatchTarget || 0,
+        item.dispatch1 || 0,
+        item.dispatch2 || 0,
+        item.dispatch3 || 0,
+        item.dispatch4 || 0
+      ];
+    });
+
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    ws['!cols'] = [
+      { wch: 18 }, { wch: 24 }, { wch: 14 }, { wch: 10 },
+      { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 },
+      { wch: 14 }, { wch: 12 }, { wch: 18 },
+      { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Dispatch Plan");
+    const tMonth = dispatchPlan ? MONTH_NAMES[dispatchPlan.targetMonth - 1] : "Plan";
+    const tYear = dispatchPlan ? dispatchPlan.targetYear : "2026";
+    XLSX.writeFile(wb, `ARB_Dispatch_Plan_${tMonth}_${tYear}.xlsx`);
+  };
+
   const getPlanningMonths = (period, sMonth = startMonth, sYear = startYear) => {
     const monthsList = [];
     let m = sMonth;
@@ -2621,6 +2855,9 @@ export default function Home() {
         </button>
         <button onClick={() => handleTabSwitch("planning")} className={`tab-btn ${activeTab === "planning" ? "active" : ""}`}>
           <span className="material-icons-round" style={{verticalAlign: "middle", marginRight: "6px", fontSize: "1.1rem"}}>date_range</span>Production Planning
+        </button>
+        <button onClick={() => handleTabSwitch("dispatch")} className={`tab-btn ${activeTab === "dispatch" ? "active" : ""}`}>
+          <span className="material-icons-round" style={{verticalAlign: "middle", marginRight: "6px", fontSize: "1.1rem"}}>local_shipping</span>Dispatch Planning
         </button>
         <button onClick={() => handleTabSwitch("reports")} className={`tab-btn ${activeTab === "reports" ? "active" : ""}`}>
           <span className="material-icons-round" style={{verticalAlign: "middle", marginRight: "6px", fontSize: "1.1rem"}}>summarize</span>Operational Reports
@@ -4230,6 +4467,364 @@ export default function Home() {
 
         </div>
 
+        {/* DISPATCH PLANNING TAB PANEL */}
+        <div id="view-dispatch" className={`view-panel ${activeTab === "dispatch" ? "active" : ""}`}>
+          <div className="planning-control-card">
+            <div className="plan-header-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <h2 style={{ margin: 0, fontSize: "1.35rem", fontWeight: "700", display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span className="material-icons-round" style={{ color: "var(--color-primary, #8b5cf6)" }}>local_shipping</span>
+                  Monthly Dispatch Planning
+                </h2>
+                {dispatchPlan && (
+                  <span className={`status-badge ${dispatchPlan.status === 'Approved' ? 'status-approved' : 'status-draft'}`}>
+                    {dispatchPlan.status === 'Approved' ? 'STATUS: APPROVED' : 'STATUS: DRAFT'}
+                  </span>
+                )}
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={() => setIsConfigureDispatchesOpen(true)}
+                  className="btn btn-secondary"
+                  style={{ display: "flex", alignItems: "center", gap: "6px" }}
+                >
+                  <span className="material-icons-round" style={{ fontSize: "1.1rem" }}>tune</span>
+                  <span>Configure Dispatches</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={triggerGenerateDispatchPlan}
+                  disabled={isGeneratingDispatch || isViewer || dispatchFeasibleMonths.length === 0}
+                  className="btn btn-primary"
+                  style={{ display: "flex", alignItems: "center", gap: "6px" }}
+                >
+                  <span className="material-icons-round" style={{ fontSize: "1.1rem" }}>
+                    {isGeneratingDispatch ? "sync" : "play_arrow"}
+                  </span>
+                  <span>{isGeneratingDispatch ? "Calculating..." : "Generate Dispatch Plan"}</span>
+                </button>
+
+                {dispatchPlan && dispatchPlan.status === 'Draft' && isAdmin && (
+                  <button
+                    type="button"
+                    onClick={handleApproveDispatchPlan}
+                    className="btn btn-accent"
+                    style={{ display: "flex", alignItems: "center", gap: "6px", background: "var(--color-success, #10b981)", borderColor: "var(--color-success, #10b981)" }}
+                  >
+                    <span className="material-icons-round" style={{ fontSize: "1.1rem" }}>check_circle</span>
+                    <span>Lock & Approve Plan</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Parameters Bar */}
+            <div className="planning-params-grid" style={{ marginTop: "16px", display: "flex", flexWrap: "wrap", gap: "16px", alignItems: "flex-end" }}>
+              <div className="param-input-group" style={{ margin: 0, minWidth: "220px" }}>
+                <label style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontWeight: "600" }}>
+                  Target Planning Month:
+                </label>
+                <select
+                  value={`${selectedDispatchYear}-${selectedDispatchMonth}`}
+                  onChange={(e) => {
+                    const [y, m] = e.target.value.split("-");
+                    setSelectedDispatchYear(parseInt(y, 10));
+                    setSelectedDispatchMonth(parseInt(m, 10));
+                  }}
+                  className="param-select"
+                  disabled={isViewer || dispatchPlan?.status === 'Approved'}
+                >
+                  {dispatchFeasibleMonths.map(fm => (
+                    <option key={`${fm.year}-${fm.monthNum}`} value={`${fm.year}-${fm.monthNum}`}>
+                      {fm.label}
+                    </option>
+                  ))}
+                  {dispatchFeasibleMonths.length === 0 && (
+                    <option value="">No planning months available</option>
+                  )}
+                </select>
+              </div>
+
+              <div className="param-input-group" style={{ margin: 0, minWidth: "150px" }}>
+                <label style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontWeight: "600" }}>
+                  Growth Modifier %:
+                </label>
+                <input
+                  type="number"
+                  value={dispatchGrowthRate}
+                  onChange={(e) => setDispatchGrowthRate(parseFloat(e.target.value) || 0)}
+                  className="param-input"
+                  disabled={isViewer || dispatchPlan?.status === 'Approved'}
+                  min="-100"
+                  max="500"
+                />
+              </div>
+
+              {dispatchComparisonMonths.length === 4 && (
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  padding: "8px 12px",
+                  borderRadius: "8px",
+                  background: "rgba(139, 92, 246, 0.08)",
+                  border: "1px solid rgba(139, 92, 246, 0.2)",
+                  fontSize: "0.75rem",
+                  color: "var(--text-muted)"
+                }}>
+                  <span className="material-icons-round" style={{ fontSize: "1rem", color: "var(--color-primary, #8b5cf6)" }}>info</span>
+                  <span>
+                    Comparing: <strong>{dispatchComparisonMonths[0].label}</strong> & <strong>{dispatchComparisonMonths[1].label}</strong> (Current Year) vs <strong>{dispatchComparisonMonths[2].label}</strong> & <strong>{dispatchComparisonMonths[3].label}</strong> (Prev Year)
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {dispatchError && (
+              <div style={{
+                marginTop: "16px",
+                padding: "12px 16px",
+                background: "rgba(239, 68, 68, 0.12)",
+                border: "1px solid rgba(239, 68, 68, 0.3)",
+                borderRadius: "8px",
+                color: "#f87171",
+                fontSize: "0.85rem",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px"
+              }}>
+                <span className="material-icons-round">error_outline</span>
+                <span>{dispatchError}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Metric Summary Cards */}
+          {dispatchPlan && (
+            <div className="comparison-panel" style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: "16px",
+              marginTop: "20px",
+              padding: "16px 20px",
+              background: "var(--bg-surface-opaque, rgba(255, 255, 255, 0.03))",
+              borderRadius: "12px",
+              border: "1px solid var(--border-color, rgba(255, 255, 255, 0.08))"
+            }}>
+              <div style={{ flex: 1, minWidth: "150px" }}>
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontWeight: "600" }}>Total Net Dispatch</div>
+                <div style={{ fontSize: "1.4rem", fontWeight: "700", color: "var(--color-primary, #8b5cf6)", marginTop: "4px" }}>
+                  {(dispatchPlan.totalNetDispatch || 0).toLocaleString()}
+                </div>
+              </div>
+              <div style={{ flex: 1, minWidth: "120px" }}>
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontWeight: "600" }}>Dispatch 1</div>
+                <div style={{ fontSize: "1.2rem", fontWeight: "700", color: "var(--text-main)", marginTop: "4px" }}>
+                  {(dispatchPlan.totalDispatch1 || 0).toLocaleString()}
+                </div>
+              </div>
+              <div style={{ flex: 1, minWidth: "120px" }}>
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontWeight: "600" }}>Dispatch 2</div>
+                <div style={{ fontSize: "1.2rem", fontWeight: "700", color: "var(--text-main)", marginTop: "4px" }}>
+                  {(dispatchPlan.totalDispatch2 || 0).toLocaleString()}
+                </div>
+              </div>
+              <div style={{ flex: 1, minWidth: "120px" }}>
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontWeight: "600" }}>Dispatch 3</div>
+                <div style={{ fontSize: "1.2rem", fontWeight: "700", color: "var(--text-main)", marginTop: "4px" }}>
+                  {(dispatchPlan.totalDispatch3 || 0).toLocaleString()}
+                </div>
+              </div>
+              <div style={{ flex: 1, minWidth: "120px" }}>
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontWeight: "600" }}>Dispatch 4</div>
+                <div style={{ fontSize: "1.2rem", fontWeight: "700", color: "var(--text-main)", marginTop: "4px" }}>
+                  {(dispatchPlan.totalDispatch4 || 0).toLocaleString()}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Table Card */}
+          <div className="planning-targets-card" style={{ marginTop: "20px" }}>
+            <div className="targets-header-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px", marginBottom: "16px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                <h3 style={{ margin: 0, fontSize: "1.1rem", fontWeight: "700" }}>
+                  Dispatch Allocation Table ({filteredDispatchItems.length} items)
+                </h3>
+                <input
+                  type="text"
+                  placeholder="Search bearing, category, depot..."
+                  value={dispatchSearch}
+                  onChange={(e) => {
+                    setDispatchSearch(e.target.value);
+                    setDispatchPage(1);
+                  }}
+                  className="search-input"
+                  style={{ width: "220px", height: "34px", fontSize: "0.8rem" }}
+                />
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <button
+                  type="button"
+                  onClick={exportDispatchToExcel}
+                  disabled={filteredDispatchItems.length === 0}
+                  className="btn btn-secondary"
+                  style={{ display: "flex", alignItems: "center", gap: "6px", height: "36px" }}
+                >
+                  <span className="material-icons-round" style={{ fontSize: "1.1rem" }}>file_download</span>
+                  <span>Export to Excel</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="grid-table-container">
+              <table className="grid-table">
+                <thead>
+                  <tr>
+                    <th>Bearing style</th>
+                    <th>Category</th>
+                    <th>Depot / Unit</th>
+                    <th style={{ textAlign: "center", color: "var(--color-accent, #a855f7)" }} title="Allocated stock deducted for this depot/unit">Stock</th>
+                    <th style={{ textAlign: "center", color: "var(--color-primary, #8b5cf6)" }}>
+                      {dispatchComparisonMonths[0]?.label || "M1 (CY M-2)"}
+                    </th>
+                    <th style={{ textAlign: "center", color: "var(--color-primary, #8b5cf6)" }}>
+                      {dispatchComparisonMonths[1]?.label || "M2 (CY M-1)"}
+                    </th>
+                    <th style={{ textAlign: "center", color: "var(--color-primary, #8b5cf6)" }}>
+                      {dispatchComparisonMonths[2]?.label || "M3 (PY M-1)"}
+                    </th>
+                    <th style={{ textAlign: "center", color: "var(--color-primary, #8b5cf6)" }}>
+                      {dispatchComparisonMonths[3]?.label || "M4 (PY M)"}
+                    </th>
+                    <th style={{ textAlign: "center" }}>Growth Qty (+{dispatchPlan?.growthRate || 20}%)</th>
+                    <th style={{ textAlign: "center", color: "#f59e0b" }}>Pending Qty</th>
+                    <th style={{ textAlign: "center", color: "var(--color-primary, #8b5cf6)" }}>Net Dispatch Target</th>
+                    <th style={{ textAlign: "center" }}>Dispatch 1</th>
+                    <th style={{ textAlign: "center" }}>Dispatch 2</th>
+                    <th style={{ textAlign: "center" }}>Dispatch 3</th>
+                    <th style={{ textAlign: "center" }}>Dispatch 4</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paginatedDispatchItems.length === 0 ? (
+                    <tr>
+                      <td colSpan={15} className="empty-state">
+                        {dispatchPlan ? "No dispatch items matching current filters." : "No active dispatch plan. Click Generate Dispatch Plan above."}
+                      </td>
+                    </tr>
+                  ) : (
+                    paginatedDispatchItems.map((item, idx) => {
+                      const allocatedStock = item.stockQty || 0;
+                      const totalBearingStock = stocks[item.bearingNo] !== undefined ? stocks[item.bearingNo] : allocatedStock;
+
+                      return (
+                        <tr key={idx}>
+                          <td style={{ fontWeight: 700 }}>{item.bearingNo}</td>
+                          <td style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>{item.category}</td>
+                          <td>{item.depot}</td>
+                          <td 
+                            title={`Allocated to this unit: ${allocatedStock.toLocaleString()} | Total stock across all units: ${totalBearingStock.toLocaleString()}`}
+                            style={{
+                              textAlign: "center",
+                              fontWeight: "600",
+                              color: "var(--color-accent, #a855f7)",
+                              background: "rgba(168, 85, 247, 0.05)"
+                            }}
+                          >
+                            {allocatedStock.toLocaleString()}
+                          </td>
+                          {[item.m1Sales, item.m2Sales, item.m3Sales, item.m4Sales].map((salesVal, sIdx) => {
+                            const isWinner = item.highestSales > 0 && sIdx === item.highestMonthIndex;
+                            return (
+                              <td
+                                key={sIdx}
+                                style={{
+                                  textAlign: "center",
+                                  fontWeight: isWinner ? "700" : "400",
+                                  color: isWinner ? "var(--color-success, #10b981)" : "var(--text-muted)",
+                                  background: isWinner ? "rgba(16, 185, 129, 0.08)" : "transparent"
+                                }}
+                              >
+                                {(salesVal || 0).toLocaleString()}
+                              </td>
+                            );
+                          })}
+                          <td style={{ textAlign: "center", fontWeight: "600" }}>
+                            {(item.growthQty || 0).toLocaleString()}
+                          </td>
+                          <td style={{
+                            textAlign: "center",
+                            fontWeight: (item.pendingQty || 0) > 0 ? "700" : "400",
+                            color: (item.pendingQty || 0) > 0 ? "#f59e0b" : "var(--text-muted)",
+                            background: (item.pendingQty || 0) > 0 ? "rgba(245, 158, 11, 0.08)" : "transparent"
+                          }}>
+                            {(item.pendingQty || 0).toLocaleString()}
+                          </td>
+                          <td style={{
+                            textAlign: "center",
+                            fontWeight: "700",
+                            color: "var(--color-primary, #8b5cf6)",
+                            background: "rgba(139, 92, 246, 0.05)"
+                          }}>
+                            {(item.netDispatchTarget || 0).toLocaleString()}
+                          </td>
+                          <td style={{ textAlign: "center", fontWeight: "600" }}>
+                            {(item.dispatch1 || 0).toLocaleString()}
+                          </td>
+                          <td style={{ textAlign: "center", fontWeight: "600" }}>
+                            {(item.dispatch2 || 0).toLocaleString()}
+                          </td>
+                          <td style={{ textAlign: "center", fontWeight: "600" }}>
+                            {(item.dispatch3 || 0).toLocaleString()}
+                          </td>
+                          <td style={{ textAlign: "center", fontWeight: "600" }}>
+                            {(item.dispatch4 || 0).toLocaleString()}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination Controls */}
+            {filteredDispatchItems.length > DISPATCH_PAGE_SIZE && (
+              <div className="pagination-bar" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "16px" }}>
+                <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                  Showing {(dispatchPage - 1) * DISPATCH_PAGE_SIZE + 1} to {Math.min(dispatchPage * DISPATCH_PAGE_SIZE, filteredDispatchItems.length)} of {filteredDispatchItems.length} items
+                </span>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    disabled={dispatchPage <= 1}
+                    onClick={() => setDispatchPage(prev => Math.max(1, prev - 1))}
+                    className="btn btn-secondary"
+                    style={{ padding: "4px 12px", fontSize: "0.8rem" }}
+                  >
+                    Previous
+                  </button>
+                  <span style={{ padding: "4px 12px", fontSize: "0.85rem", fontWeight: "600" }}>
+                    Page {dispatchPage} of {Math.ceil(filteredDispatchItems.length / DISPATCH_PAGE_SIZE)}
+                  </span>
+                  <button
+                    disabled={dispatchPage >= Math.ceil(filteredDispatchItems.length / DISPATCH_PAGE_SIZE)}
+                    onClick={() => setDispatchPage(prev => prev + 1)}
+                    className="btn btn-secondary"
+                    style={{ padding: "4px 12px", fontSize: "0.8rem" }}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* 4. OPERATIONAL REPORTS TAB PANEL */}
         <div id="view-reports" className={`view-panel ${activeTab === "reports" ? "active" : ""}`}>
           <div className="reports-layout">
@@ -4619,6 +5214,18 @@ export default function Home() {
         isOpen={showChangePasswordModal}
         onClose={() => setShowChangePasswordModal(false)}
         currentUser={currentUser}
+      />
+
+      {/* CONFIGURE DISPATCHES MODAL */}
+      <ConfigureDispatchesModal
+        isOpen={isConfigureDispatchesOpen}
+        onClose={() => setIsConfigureDispatchesOpen(false)}
+        isViewer={isViewer}
+        onSaveSuccess={() => {
+          if (dispatchPlan) {
+            triggerGenerateDispatchPlan();
+          }
+        }}
       />
 
     </div>
