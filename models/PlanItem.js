@@ -11,6 +11,7 @@ const PlanItemSchema = new mongoose.Schema({
   plannedQuantity: { type: Number, required: true },
   qtyRecent: { type: Number, default: 0 },
   qtyPrevious: { type: Number, default: 0 },
+  qtyBase: { type: Number, default: 0 },
   qtyPending: { type: Number, default: 0 },
   isManuallyEdited: { type: Boolean, default: false }
 }, {

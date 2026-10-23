@@ -2427,6 +2427,7 @@ export default function Home() {
         existing.originalQuantity += (item.originalQuantity || 0);
         existing.qtyRecent += (item.qtyRecent || 0);
         existing.qtyPrevious += (item.qtyPrevious || 0);
+        existing.qtyBase = (existing.qtyBase || 0) + (item.qtyBase || 0);
         existing.qtyPending += (item.qtyPending || 0);
         if (item.isManuallyEdited) existing.isManuallyEdited = true;
       }
@@ -4256,6 +4257,7 @@ export default function Home() {
                       const firstTarget = Object.values(p.monthlyTargets)[0];
                       const qtyRecent = firstTarget ? (firstTarget.qtyRecent || 0) : 0;
                       const qtyPrevious = firstTarget ? (firstTarget.qtyPrevious || 0) : 0;
+                      const qtyBase = firstTarget ? (firstTarget.qtyBase || Math.max(qtyRecent, qtyPrevious)) : 0;
                       const qtyPending = pendings[p.bearingNo] !== undefined 
                         ? pendings[p.bearingNo] 
                         : (firstTarget ? (firstTarget.qtyPending || 0) : 0);
