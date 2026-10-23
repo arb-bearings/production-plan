@@ -2512,8 +2512,8 @@ export default function Home() {
       const firstTarget = Object.values(p.monthlyTargets)[0];
       const qtyRecent = firstTarget ? (firstTarget.qtyRecent || 0) : 0;
       const qtyPrevious = firstTarget ? (firstTarget.qtyPrevious || 0) : 0;
-      const qtyPending = pendings[p.bearingNo] !== undefined 
-        ? pendings[p.bearingNo] 
+      const qtyPending = isAllUnitsSelected
+        ? (pendings[p.bearingNo] !== undefined ? pendings[p.bearingNo] : (firstTarget ? (firstTarget.qtyPending || 0) : 0))
         : (firstTarget ? (firstTarget.qtyPending || 0) : 0);
       const stockVal = stocks[p.bearingNo] !== undefined ? stocks[p.bearingNo] : 0;
 
@@ -2565,20 +2565,20 @@ export default function Home() {
 
     // 2. Exact table row values
     const rows = planningProducts.map(p => {
-      let rowSum = 0;
       const firstTarget = Object.values(p.monthlyTargets)[0];
       const qtyRecent = firstTarget ? (firstTarget.qtyRecent || 0) : 0;
       const qtyPrevious = firstTarget ? (firstTarget.qtyPrevious || 0) : 0;
-      const qtyPending = pendings[p.bearingNo] !== undefined 
-        ? pendings[p.bearingNo] 
+      const qtyPending = isAllUnitsSelected
+        ? (pendings[p.bearingNo] !== undefined ? pendings[p.bearingNo] : (firstTarget ? (firstTarget.qtyPending || 0) : 0))
         : (firstTarget ? (firstTarget.qtyPending || 0) : 0);
       const stockVal = stocks[p.bearingNo] !== undefined ? stocks[p.bearingNo] : 0;
+      const rowSum = planningMonthsList.reduce((s, ym) => s + (p.monthlyTargets[ym]?.plannedQuantity || 0), 0);
+      const isInStock = stockVal > rowSum;
 
       const monthlyValues = planningMonthsList.map(ym => {
         const item = p.monthlyTargets[ym];
         const qty = item ? (item.plannedQuantity || 0) : 0;
-        rowSum += qty;
-        return qty;
+        return isInStock ? "In Stock" : qty;
       });
 
       return [
@@ -4253,13 +4253,15 @@ export default function Home() {
                     </tr>
                   ) : (
                     paginatedProducts.map((p, idx) => {
-                      let rowSum = 0;
+                      const stockVal = stocks[p.bearingNo] !== undefined ? stocks[p.bearingNo] : 0;
+                      const rowSum = planningMonthsList.reduce((s, ym) => s + (p.monthlyTargets[ym]?.plannedQuantity || 0), 0);
+                      const isInStock = stockVal > rowSum;
                       const firstTarget = Object.values(p.monthlyTargets)[0];
                       const qtyRecent = firstTarget ? (firstTarget.qtyRecent || 0) : 0;
                       const qtyPrevious = firstTarget ? (firstTarget.qtyPrevious || 0) : 0;
                       const qtyBase = firstTarget ? (firstTarget.qtyBase || Math.max(qtyRecent, qtyPrevious)) : 0;
-                      const qtyPending = pendings[p.bearingNo] !== undefined 
-                        ? pendings[p.bearingNo] 
+                      const qtyPending = isAllUnitsSelected
+                        ? (pendings[p.bearingNo] !== undefined ? pendings[p.bearingNo] : (firstTarget ? (firstTarget.qtyPending || 0) : 0))
                         : (firstTarget ? (firstTarget.qtyPending || 0) : 0);
                       
                       const hasData = qtyRecent > 0 || qtyPrevious > 0;
@@ -4295,18 +4297,20 @@ export default function Home() {
                           }}>
                             {qtyPrevious.toLocaleString()}
                           </td>
-                          <td style={{
-                            textAlign: "center", 
-                            fontWeight: qtyPending > 0 ? "700" : "400",
-                            color: qtyPending > 0 ? "#f59e0b" : "var(--text-muted)",
-                            background: qtyPending > 0 ? "rgba(245, 158, 11, 0.08)" : "transparent"
-                          }}>
+                          <td 
+                            title={!isAllUnitsSelected ? `Unit Pending: ${qtyPending.toLocaleString()} (Total across all units: ${(pendings[p.bearingNo] || qtyPending).toLocaleString()})` : `Total Pending: ${qtyPending.toLocaleString()}`}
+                            style={{
+                              textAlign: "center", 
+                              fontWeight: qtyPending > 0 ? "700" : "400",
+                              color: qtyPending > 0 ? "#f59e0b" : "var(--text-muted)",
+                              background: qtyPending > 0 ? "rgba(245, 158, 11, 0.08)" : "transparent"
+                            }}
+                          >
                             {qtyPending.toLocaleString()}
                           </td>
                           {planningMonthsList.map((ym, monthIdx) => {
                             const item = p.monthlyTargets[ym];
                             const qty = item ? item.plannedQuantity : 0;
-                            rowSum += qty;
                             
                             const isEditing = editingCell && 
                               editingCell.bearingNo === p.bearingNo &&
@@ -4319,7 +4323,9 @@ export default function Home() {
                               ? "🔒 Read-Only: You do not have permission to edit planned quantities (Viewer role)"
                               : activePlan?.status === 'Approved'
                                 ? "🔒 Locked: This approved plan cannot be edited"
-                                : "Double-click to manually override quantity";
+                                : isInStock
+                                  ? `In Stock: Available Stock (${stockVal.toLocaleString()}) > Sum Target (${rowSum.toLocaleString()}) | Target: ${qty.toLocaleString()} - Double-click to override`
+                                  : "Double-click to manually override quantity";
 
                             return (
                               <td 
@@ -4342,6 +4348,22 @@ export default function Home() {
                                     min="0"
                                     step="1"
                                   />
+                                ) : isInStock ? (
+                                  <span 
+                                    style={{
+                                      display: "inline-block",
+                                      padding: "2px 8px",
+                                      borderRadius: "4px",
+                                      fontSize: "0.74rem",
+                                      fontWeight: "700",
+                                      background: "rgba(16, 185, 129, 0.14)",
+                                      color: "var(--color-success, #10b981)",
+                                      border: "1px solid rgba(16, 185, 129, 0.3)",
+                                      whiteSpace: "nowrap"
+                                    }}
+                                  >
+                                    In Stock
+                                  </span>
                                 ) : (
                                   <span>{qty.toLocaleString()}</span>
                                 )}
@@ -4585,6 +4607,65 @@ export default function Home() {
               )}
             </div>
 
+            {/* Dispatch Formula Banner */}
+            <div style={{
+              marginTop: "16px",
+              padding: "12px 18px",
+              borderRadius: "10px",
+              background: "linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(139, 92, 246, 0.08) 100%)",
+              border: "1px solid rgba(139, 92, 246, 0.25)",
+              display: "flex",
+              alignItems: "center",
+              gap: "12px",
+              fontSize: "0.82rem",
+              color: "var(--text-main)",
+              flexWrap: "wrap"
+            }}>
+              <span className="material-icons-round" style={{ fontSize: "1.3rem", color: "var(--color-primary, #8b5cf6)" }}>functions</span>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", lineHeight: "1.6" }}>
+                <span style={{ fontWeight: 700, color: "var(--color-primary, #a78bfa)" }}>Dispatch Formula:</span>
+                <span style={{ 
+                  background: "rgba(255, 255, 255, 0.06)", 
+                  padding: "3px 8px", 
+                  borderRadius: "5px", 
+                  fontFamily: "monospace", 
+                  fontSize: "0.8rem",
+                  border: "1px solid rgba(255, 255, 255, 0.1)"
+                }}>
+                  Growth Qty = Highest Sales + {dispatchPlan?.growthRate || dispatchGrowthRate}% Growth
+                </span>
+                <span style={{ color: "var(--text-muted)" }}>➔</span>
+                <span style={{ 
+                  background: "rgba(139, 92, 246, 0.14)", 
+                  padding: "3px 8px", 
+                  borderRadius: "5px", 
+                  fontFamily: "monospace", 
+                  fontSize: "0.8rem",
+                  border: "1px solid rgba(139, 92, 246, 0.3)",
+                  color: "#c4b5fd",
+                  fontWeight: 600
+                }}>
+                  Net Dispatch Target = max(0, Growth Qty − Stock)
+                </span>
+                <span style={{ color: "var(--text-muted)" }}>➔</span>
+                <span style={{ 
+                  background: "rgba(16, 185, 129, 0.12)", 
+                  padding: "3px 8px", 
+                  borderRadius: "5px", 
+                  fontFamily: "monospace", 
+                  fontSize: "0.8rem",
+                  border: "1px solid rgba(16, 185, 129, 0.3)",
+                  color: "#6ee7b7",
+                  fontWeight: 600
+                }}>
+                  Dispatches 1–4 = 25% each
+                </span>
+                <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontStyle: "italic", marginLeft: "4px" }}>
+                  (Note: Pending Qty is displayed for reference in the grid, but excluded from net dispatch target calculation)
+                </span>
+              </div>
+            </div>
+
             {dispatchError && (
               <div style={{
                 marginTop: "16px",
@@ -4704,8 +4785,8 @@ export default function Home() {
                       {dispatchComparisonMonths[3]?.label || "M4 (PY M)"}
                     </th>
                     <th style={{ textAlign: "center" }}>Growth Qty (+{dispatchPlan?.growthRate || 20}%)</th>
-                    <th style={{ textAlign: "center", color: "#f59e0b" }}>Pending Qty</th>
-                    <th style={{ textAlign: "center", color: "var(--color-primary, #8b5cf6)" }}>Net Dispatch Target</th>
+                    <th style={{ textAlign: "center", color: "#f59e0b" }} title="Pending Qty: Displayed for reference (excluded from dispatch calculation)">Pending Qty</th>
+                    <th style={{ textAlign: "center", color: "var(--color-primary, #8b5cf6)" }} title="Net Dispatch Target = max(0, Growth Qty − Stock)">Net Dispatch Target</th>
                     <th style={{ textAlign: "center" }}>Dispatch 1</th>
                     <th style={{ textAlign: "center" }}>Dispatch 2</th>
                     <th style={{ textAlign: "center" }}>Dispatch 3</th>
