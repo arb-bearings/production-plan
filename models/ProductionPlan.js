@@ -14,6 +14,8 @@ const ProductionPlanSchema = new mongoose.Schema({
   recentTotal: { type: Number },
   previousTotal: { type: Number },
   isRecentStronger: { type: Boolean },
+  recentMonths: { type: Array, default: [] },
+  previousMonths: { type: Array, default: [] },
   createdBy: { type: String, default: 'system' },
   approvedBy: { type: String, default: '' },
   approvedAt: { type: Date }

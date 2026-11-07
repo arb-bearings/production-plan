@@ -19,12 +19,56 @@ const MONTH_NAMES = [
   "July", "August", "September", "October", "November", "December"
 ];
 
+function getCYBaselineMonths(startMonth, startYear, N) {
+  const months = [];
+  let curM = startMonth - 1;
+  let curY = startYear;
+  if (curM <= 0) {
+    curM = 12;
+    curY -= 1;
+  }
+  for (let i = 0; i < N; i++) {
+    months.push({
+      monthNum: curM,
+      monthName: MONTH_NAMES[curM - 1],
+      year: curY
+    });
+    curM--;
+    if (curM <= 0) {
+      curM = 12;
+      curY -= 1;
+    }
+  }
+  return months.reverse();
+}
+
+function getPYBaselineMonths(startMonth, startYear, N) {
+  const months = [];
+  let curM = startMonth;
+  let curY = startYear - 1;
+  for (let i = 0; i < N; i++) {
+    months.push({
+      monthNum: curM,
+      monthName: MONTH_NAMES[curM - 1],
+      year: curY
+    });
+    curM++;
+    if (curM > 12) {
+      curM = 1;
+      curY += 1;
+    }
+  }
+  return months;
+}
+
 export default function Home() {
   // --- STATE LAYER ---
   const [records, setRecords] = useState([]);
   const [plans, setPlans] = useState([]);
   const [activePlan, setActivePlan] = useState(null);
   const [activePlanItems, setActivePlanItems] = useState([]);
+  const [baselineTooltip, setBaselineTooltip] = useState(null); // 'CY' | 'PY' | null
+  const [baselineHovered, setBaselineHovered] = useState(null); // 'CY' | 'PY' | null
   
   // Auth state
   const [currentUser, setCurrentUser] = useState(null);
@@ -315,7 +359,12 @@ export default function Home() {
       const data = await res.json();
       if (data.success) {
         setPlans(data.plan ? [data.plan] : []);
-        setActivePlan(data.plan);
+        setActivePlan({
+          ...data.plan,
+          comparison: data.comparison,
+          recentMonths: data.comparison?.recentMonths || data.plan?.recentMonths,
+          previousMonths: data.comparison?.previousMonths || data.plan?.previousMonths
+        });
         setActivePlanItems(data.items || []);
         if (data.plan) {
           setGrowthRate(data.plan.growthRate);
@@ -1040,7 +1089,12 @@ export default function Home() {
       const data = await res.json();
       if (data.success) {
         setPlanningError(null);
-        setActivePlan(data.plan);
+        setActivePlan({
+          ...data.plan,
+          comparison: data.comparison,
+          recentMonths: data.comparison?.recentMonths || data.plan?.recentMonths,
+          previousMonths: data.comparison?.previousMonths || data.plan?.previousMonths
+        });
         setActivePlanItems(data.items);
         setPlans(prev => [data.plan, ...prev.filter(p => p._id !== data.plan._id)]);
         const planStartMonth = data.plan.startMonth || startMonth;
@@ -2497,6 +2551,30 @@ export default function Home() {
   const planningMonthsList = useMemo(() => {
     return [...new Set(activePlanItems.map(item => `${item.targetYear}-${String(item.targetMonth).padStart(2,'0')}`))].sort();
   }, [activePlanItems]);
+
+  const curPlanStartMonth = activePlan?.startMonth || startMonth;
+  const curPlanStartYear = activePlan?.startYear || startYear;
+  const curPlanPeriod = activePlan?.planningPeriod || planningPeriod;
+
+  const cyBaselineMonthsList = useMemo(() => {
+    return (activePlan?.recentMonths && activePlan.recentMonths.length > 0)
+      ? activePlan.recentMonths
+      : getCYBaselineMonths(curPlanStartMonth, curPlanStartYear, curPlanPeriod);
+  }, [activePlan, curPlanStartMonth, curPlanStartYear, curPlanPeriod]);
+
+  const pyBaselineMonthsList = useMemo(() => {
+    return (activePlan?.previousMonths && activePlan.previousMonths.length > 0)
+      ? activePlan.previousMonths
+      : getPYBaselineMonths(curPlanStartMonth, curPlanStartYear, curPlanPeriod);
+  }, [activePlan, curPlanStartMonth, curPlanStartYear, curPlanPeriod]);
+
+  const cyBaselineFormatted = useMemo(() => {
+    return cyBaselineMonthsList.map(m => `${(m.monthName || MONTH_NAMES[(m.monthNum || 1) - 1] || '').substring(0, 3)} ${m.year}`).join(', ');
+  }, [cyBaselineMonthsList]);
+
+  const pyBaselineFormatted = useMemo(() => {
+    return pyBaselineMonthsList.map(m => `${(m.monthName || MONTH_NAMES[(m.monthNum || 1) - 1] || '').substring(0, 3)} ${m.year}`).join(', ');
+  }, [pyBaselineMonthsList]);
 
   // Overall column totals for the currently filtered target grid products
   const targetGridTotals = useMemo(() => {
@@ -3983,14 +4061,15 @@ export default function Home() {
                   </span>
                 </h4>
                 <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                  Historical actual production compared between {activePlan.planningPeriod} completed baseline months prior to {MONTH_NAMES[(activePlan.startMonth || startMonth) - 1]} {activePlan.startYear || startYear} and the previous year.
+                  Historical actual production compared between {activePlan.planningPeriod} baseline months prior to {MONTH_NAMES[(activePlan.startMonth || startMonth) - 1]} {activePlan.startYear || startYear} (CY: {cyBaselineFormatted}) and the previous year's planned period (PY: {pyBaselineFormatted}).
                 </p>
               </div>
 
               <div style={{ display: "flex", gap: "32px", alignItems: "center" }}>
                 {/* Recent Months Total Card */}
                 <div style={{ textAlign: "center" }}>
-                  <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase", marginBottom: "4px" }}>Recent {activePlan.planningPeriod} Months</div>
+                  <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase", marginBottom: "2px" }}>Recent {activePlan.planningPeriod} Months (CY)</div>
+                  <div style={{ fontSize: "0.72rem", color: "var(--color-primary, #8b5cf6)", fontWeight: "500", marginBottom: "4px" }}>{cyBaselineFormatted}</div>
                   <div style={{ 
                     fontSize: "1.25rem", 
                     fontWeight: "700", 
@@ -4007,7 +4086,8 @@ export default function Home() {
 
                 {/* Previous Year Months Total Card */}
                 <div style={{ textAlign: "center" }}>
-                  <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase", marginBottom: "4px" }}>Previous Year Period</div>
+                  <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase", marginBottom: "2px" }}>Previous Year Period (PY)</div>
+                  <div style={{ fontSize: "0.72rem", color: "var(--color-primary, #8b5cf6)", fontWeight: "500", marginBottom: "4px" }}>{pyBaselineFormatted}</div>
                   <div style={{ 
                     fontSize: "1.25rem", 
                     fontWeight: "700", 
@@ -4232,8 +4312,227 @@ export default function Home() {
                     {renderSortHeader('category', 'Category')}
                     {renderSortHeader('unitName', 'Mfg unit')}
                     {renderSortHeader('stock', 'Stock', {textAlign: "center", color: "var(--color-accent, #a855f7)"})}
-                    <th style={{textAlign: "center", color: "var(--color-primary, #8b5cf6)"}}>CY Baseline ({planningPeriod}m)</th>
-                    <th style={{textAlign: "center", color: "var(--color-primary, #8b5cf6)"}}>PY Baseline ({planningPeriod}m)</th>
+                    {/* CY Baseline Header with Hover & Click Eye Icon */}
+                    <th
+                      style={{
+                        textAlign: "center",
+                        color: "var(--color-primary, #8b5cf6)",
+                        position: "relative",
+                        userSelect: "none"
+                      }}
+                      title={`CY Baseline (${curPlanPeriod}m): ${cyBaselineFormatted}`}
+                      onMouseEnter={() => setBaselineHovered('CY')}
+                      onMouseLeave={() => setBaselineHovered(null)}
+                    >
+                      <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
+                        <span>CY Baseline ({curPlanPeriod}m)</span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setBaselineTooltip(prev => prev === 'CY' ? null : 'CY');
+                          }}
+                          title="Click or hover to inspect CY baseline months"
+                          style={{
+                            background: (baselineTooltip === 'CY' || baselineHovered === 'CY') ? "rgba(139, 92, 246, 0.25)" : "rgba(255, 255, 255, 0.08)",
+                            border: `1px solid ${(baselineTooltip === 'CY' || baselineHovered === 'CY') ? "var(--color-primary, #8b5cf6)" : "rgba(255, 255, 255, 0.2)"}`,
+                            borderRadius: "50%",
+                            width: "22px",
+                            height: "22px",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            padding: 0,
+                            cursor: "pointer",
+                            color: "var(--color-primary, #8b5cf6)",
+                            transition: "all 0.15s ease"
+                          }}
+                        >
+                          <span className="material-icons-round" style={{ fontSize: "14px" }}>visibility</span>
+                        </button>
+                      </div>
+
+                      {/* Floating Tooltip / Popover for CY */}
+                      {(baselineTooltip === 'CY' || baselineHovered === 'CY') && (
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          style={{
+                            position: "absolute",
+                            top: "calc(100% + 8px)",
+                            left: "50%",
+                            transform: "translateX(-50%)",
+                            background: "#0f172a",
+                            color: "#f8fafc",
+                            border: "1px solid rgba(139, 92, 246, 0.4)",
+                            boxShadow: "0 12px 28px rgba(0, 0, 0, 0.6), 0 0 12px rgba(139, 92, 246, 0.25)",
+                            borderRadius: "8px",
+                            padding: "10px 14px",
+                            minWidth: "220px",
+                            maxWidth: "290px",
+                            zIndex: 100,
+                            textAlign: "left",
+                            fontWeight: "normal",
+                            pointerEvents: "auto",
+                            lineHeight: "1.4"
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
+                            <strong style={{ fontSize: "0.78rem", color: "#a78bfa", display: "flex", alignItems: "center", gap: "5px" }}>
+                              <span className="material-icons-round" style={{ fontSize: "14px" }}>history</span>
+                              Current Year Baseline
+                            </strong>
+                            {baselineTooltip === 'CY' && (
+                              <button
+                                type="button"
+                                onClick={() => setBaselineTooltip(null)}
+                                style={{
+                                  background: "none",
+                                  border: "none",
+                                  color: "#94a3b8",
+                                  cursor: "pointer",
+                                  fontSize: "12px",
+                                  padding: 0,
+                                  lineHeight: 1
+                                }}
+                                title="Close"
+                              >
+                                ✕
+                              </button>
+                            )}
+                          </div>
+                          <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginBottom: "6px" }}>
+                            Past {curPlanPeriod} completed months:
+                          </div>
+                          <div style={{
+                            fontSize: "0.82rem",
+                            fontWeight: "600",
+                            color: "#ffffff",
+                            background: "rgba(139, 92, 246, 0.18)",
+                            padding: "6px 10px",
+                            borderRadius: "5px",
+                            border: "1px solid rgba(139, 92, 246, 0.3)"
+                          }}>
+                            {cyBaselineFormatted}
+                          </div>
+                          {activePlan?.recentTotal !== undefined && (
+                            <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginTop: "6px" }}>
+                              Total volume: <span style={{ fontWeight: "600", color: "#38bdf8" }}>{activePlan.recentTotal.toLocaleString()} units</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </th>
+
+                    {/* PY Baseline Header with Hover & Click Eye Icon */}
+                    <th
+                      style={{
+                        textAlign: "center",
+                        color: "var(--color-primary, #8b5cf6)",
+                        position: "relative",
+                        userSelect: "none"
+                      }}
+                      title={`PY Baseline (${curPlanPeriod}m): ${pyBaselineFormatted}`}
+                      onMouseEnter={() => setBaselineHovered('PY')}
+                      onMouseLeave={() => setBaselineHovered(null)}
+                    >
+                      <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
+                        <span>PY Baseline ({curPlanPeriod}m)</span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setBaselineTooltip(prev => prev === 'PY' ? null : 'PY');
+                          }}
+                          title="Click or hover to inspect PY baseline months"
+                          style={{
+                            background: (baselineTooltip === 'PY' || baselineHovered === 'PY') ? "rgba(139, 92, 246, 0.25)" : "rgba(255, 255, 255, 0.08)",
+                            border: `1px solid ${(baselineTooltip === 'PY' || baselineHovered === 'PY') ? "var(--color-primary, #8b5cf6)" : "rgba(255, 255, 255, 0.2)"}`,
+                            borderRadius: "50%",
+                            width: "22px",
+                            height: "22px",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            padding: 0,
+                            cursor: "pointer",
+                            color: "var(--color-primary, #8b5cf6)",
+                            transition: "all 0.15s ease"
+                          }}
+                        >
+                          <span className="material-icons-round" style={{ fontSize: "14px" }}>visibility</span>
+                        </button>
+                      </div>
+
+                      {/* Floating Tooltip / Popover for PY */}
+                      {(baselineTooltip === 'PY' || baselineHovered === 'PY') && (
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          style={{
+                            position: "absolute",
+                            top: "calc(100% + 8px)",
+                            left: "50%",
+                            transform: "translateX(-50%)",
+                            background: "#0f172a",
+                            color: "#f8fafc",
+                            border: "1px solid rgba(139, 92, 246, 0.4)",
+                            boxShadow: "0 12px 28px rgba(0, 0, 0, 0.6), 0 0 12px rgba(139, 92, 246, 0.25)",
+                            borderRadius: "8px",
+                            padding: "10px 14px",
+                            minWidth: "220px",
+                            maxWidth: "290px",
+                            zIndex: 100,
+                            textAlign: "left",
+                            fontWeight: "normal",
+                            pointerEvents: "auto",
+                            lineHeight: "1.4"
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
+                            <strong style={{ fontSize: "0.78rem", color: "#a78bfa", display: "flex", alignItems: "center", gap: "5px" }}>
+                              <span className="material-icons-round" style={{ fontSize: "14px" }}>update</span>
+                              Previous Year Baseline
+                            </strong>
+                            {baselineTooltip === 'PY' && (
+                              <button
+                                type="button"
+                                onClick={() => setBaselineTooltip(null)}
+                                style={{
+                                  background: "none",
+                                  border: "none",
+                                  color: "#94a3b8",
+                                  cursor: "pointer",
+                                  fontSize: "12px",
+                                  padding: 0,
+                                  lineHeight: 1
+                                }}
+                                title="Close"
+                              >
+                                ✕
+                              </button>
+                            )}
+                          </div>
+                          <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginBottom: "6px" }}>
+                            Last year's next {curPlanPeriod} months:
+                          </div>
+                          <div style={{
+                            fontSize: "0.82rem",
+                            fontWeight: "600",
+                            color: "#ffffff",
+                            background: "rgba(139, 92, 246, 0.18)",
+                            padding: "6px 10px",
+                            borderRadius: "5px",
+                            border: "1px solid rgba(139, 92, 246, 0.3)"
+                          }}>
+                            {pyBaselineFormatted}
+                          </div>
+                          {activePlan?.previousTotal !== undefined && (
+                            <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginTop: "6px" }}>
+                              Total volume: <span style={{ fontWeight: "600", color: "#38bdf8" }}>{activePlan.previousTotal.toLocaleString()} units</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </th>
                     <th style={{textAlign: "center", color: "#f59e0b"}}>Pending Qty</th>
                     {planningMonthsList.map(ym => {
                       const [y, m] = ym.split("-");

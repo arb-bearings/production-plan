@@ -4,7 +4,7 @@ import Record from '@/models/Record';
 import ProductionPlan from '@/models/ProductionPlan';
 import PlanItem from '@/models/PlanItem';
 import Pending from '@/models/Pending';
-import { calculateRollingBaseline, applyBatchRedistribution, MONTH_NAMES } from '@/lib/planning-engine';
+import { calculateRollingBaseline, applyBatchRedistribution, getBaselineMonths, getPreviousYearForwardMonths, MONTH_NAMES } from '@/lib/planning-engine';
 
 export async function GET(request) {
   try {
@@ -71,6 +71,8 @@ export async function GET(request) {
         recentTotal: baselineResult.recentTotal,
         previousTotal: baselineResult.previousTotal,
         isRecentStronger: baselineResult.isRecentStronger,
+        recentMonths: baselineResult.recentMonths,
+        previousMonths: baselineResult.previousMonths,
         createdBy: 'system',
         approvedBy: 'admin',
         approvedAt: new Date()
@@ -88,9 +90,17 @@ export async function GET(request) {
 
     const items = await PlanItem.find({ planId: activePlan._id }).lean();
     
+    const planObj = activePlan.toObject ? activePlan.toObject() : { ...activePlan };
+    if (!planObj.recentMonths || planObj.recentMonths.length === 0) {
+      planObj.recentMonths = getBaselineMonths(planObj.startMonth, planObj.startYear, planObj.planningPeriod);
+    }
+    if (!planObj.previousMonths || planObj.previousMonths.length === 0) {
+      planObj.previousMonths = getPreviousYearForwardMonths(planObj.startMonth, planObj.startYear, planObj.planningPeriod);
+    }
+
     return NextResponse.json({
       success: true,
-      plan: activePlan,
+      plan: planObj,
       items
     });
 
@@ -208,6 +218,8 @@ export async function POST(request) {
       recentTotal: baselineResult.recentTotal,
       previousTotal: baselineResult.previousTotal,
       isRecentStronger: baselineResult.isRecentStronger,
+      recentMonths: baselineResult.recentMonths,
+      previousMonths: baselineResult.previousMonths,
       createdBy: 'production planner',
       approvedBy: '',
       approvedAt: null
