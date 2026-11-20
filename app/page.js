@@ -303,8 +303,8 @@ export default function Home() {
       const data = await res.json();
       if (data.success) {
         setRecords(data.records || []);
-        // Set initial preview to historical records
-        setUploaderPreview((data.records || []).slice(0, 100));
+        // Set full record list in preview (paginated)
+        setUploaderPreview(data.records || []);
         setUploaderPreviewPage(1);
       }
     } catch (err) {
@@ -1435,9 +1435,7 @@ export default function Home() {
         return;
       }
 
-      const unitRegex1 = /(?:unit|p)(?:-| )?(\d+)/i;
-      const unitRegex2 = /^(\d+)$/;
-      const alphanumericRegex = /^[a-z0-9\-\s]+$/i;
+      const alphanumericRegex = /^[a-z0-9\-\s\/\.&_]+$/i;
       const separators = /[\s\-\/]/;
       const quarterRegex = /^Q[1-4]$/;
 
@@ -1471,21 +1469,17 @@ export default function Home() {
           row[keyMap[rawKey]] = rawRow[rawKey];
         }
 
-        // Unit
+        // Unit — preserve the raw value exactly as in Excel, just trim whitespace
         let unit = String(row["Unit"] !== undefined ? row["Unit"] : "").trim();
         if (!unit || unit === "undefined" || unit === "null") {
           rowErrors.push("Unit is required.");
         } else {
-          const match = unit.match(unitRegex1) || unit.match(unitRegex2);
-          if (match) {
-            unit = `Unit-${match[1]}`;
+          const isValidUnit = alphanumericRegex.test(unit);
+          if (isValidUnit && unit.length >= 1) {
+            // Keep original casing/formatting as-is from the sheet (P-2, IPC, ARB-DELHI, etc.)
+            unit = unit.trim();
           } else {
-            const isAlphanumeric = alphanumericRegex.test(unit);
-            if (isAlphanumeric && unit.length >= 2) {
-              unit = unit.toUpperCase();
-            } else {
-              rowErrors.push(`Invalid Unit format: "${unit}".`);
-            }
+            rowErrors.push(`Invalid Unit format: "${unit}".`);
           }
         }
 
@@ -1521,22 +1515,32 @@ export default function Home() {
           else rowErrors.push(`Invalid Month: "${month}".`);
         }
 
-        // Year
+        // Year — handle F.YEAR formats like "2026-27" (Indian financial year)
+        // For FY "2026-27": April–December → 2026, January–March → 2027
         let yearVal = row["Year"];
         let yearDate = null;
         let yearNum = NaN;
 
-        if (typeof yearVal === "string" && yearVal.includes("-")) {
+        if (typeof yearVal === "string" && /^\d{4}-\d{2,4}$/.test(yearVal.trim())) {
+          // Financial year format e.g. "2026-27" or "2026-2027"
+          const fyStart = parseInt(yearVal.split("-")[0].trim(), 10); // e.g. 2026
+          const fyEnd = fyStart + 1; // e.g. 2027
+          // Determine which calendar year based on the month:
+          // April(4) to December(12) → fyStart; January(1) to March(3) → fyEnd
+          const monthNumForYear = MONTH_NAMES.indexOf(month) + 1; // month is already resolved above
+          if (!isNaN(fyStart)) {
+            yearNum = (monthNumForYear >= 1 && monthNumForYear <= 3) ? fyEnd : fyStart;
+          }
+        } else if (typeof yearVal === "string" && yearVal.includes("-")) {
           if (yearVal.length > 4 && !isNaN(Date.parse(yearVal))) {
             const localDate = new Date(yearVal);
             yearDate = new Date(localDate.getTime() - localDate.getTimezoneOffset() * 60000);
           } else {
-            yearVal = yearVal.split("-")[0].trim();
-            yearNum = parseInt(yearVal, 10);
+            yearNum = parseInt(yearVal.split("-")[0].trim(), 10);
           }
         } else {
           let yNum = Number(yearVal);
-          if (!isNaN(yNum) && yNum >= 2020 && yNum <= 2030) {
+          if (!isNaN(yNum) && yNum >= 2020 && yNum <= 2050) {
             yearNum = yNum;
           } else if (!isNaN(yNum) && yNum > 40000) {
             yearDate = new Date((yNum - 25569) * 86400 * 1000);
@@ -1553,7 +1557,7 @@ export default function Home() {
         }
 
         const year = yearNum;
-        if (isNaN(year) || year < 2020 || year > 2030) {
+        if (isNaN(year) || year < 2020 || year > 2050) {
           rowErrors.push(`Invalid Year: "${row["Year"] !== undefined ? row["Year"] : ""}".`);
         }
 
@@ -3740,6 +3744,57 @@ export default function Home() {
         {/* 3. PRODUCTION PLANNING TAB PANEL */}
         <div id="view-planning" className={`view-panel ${activeTab === "planning" ? "active" : ""}`}>
           
+          {/* Depot-filter active notice — planning is only valid across ALL units */}
+          {!isAllUnitsSelected && (
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "14px",
+              padding: "16px 20px",
+              background: "rgba(245, 158, 11, 0.12)",
+              border: "1px solid rgba(245, 158, 11, 0.4)",
+              borderRadius: "12px",
+              color: "#fde68a",
+              marginBottom: "16px",
+              width: "100%",
+              boxShadow: "0 4px 16px rgba(245, 158, 11, 0.08)"
+            }}>
+              <span className="material-icons-round" style={{ fontSize: "1.5rem", color: "#f59e0b", flexShrink: 0 }}>
+                factory
+              </span>
+              <div style={{ display: "flex", flexDirection: "column", gap: "4px", flexGrow: 1 }}>
+                <strong style={{ color: "#fff", fontSize: "0.95rem" }}>Production Planning requires All Units</strong>
+                <span style={{ fontSize: "0.85rem", lineHeight: "1.5", color: "rgba(255, 255, 255, 0.85)" }}>
+                  You have filtered to <strong>{filters.unit.join(", ")}</strong>. Production planning calculates targets
+                  using the total demand across <em>all</em> manufacturing units combined. Please switch the Unit filter
+                  to <strong>"All Mfg Units"</strong> to view or generate a production plan.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFilters(f => ({ ...f, unit: [] }))}
+                className="btn"
+                style={{
+                  flexShrink: 0,
+                  padding: "8px 14px",
+                  fontSize: "0.82rem",
+                  fontWeight: "600",
+                  background: "rgba(245, 158, 11, 0.25)",
+                  border: "1px solid rgba(245, 158, 11, 0.5)",
+                  color: "#fff",
+                  borderRadius: "7px",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "5px"
+                }}
+              >
+                <span className="material-icons-round" style={{ fontSize: "1rem" }}>clear_all</span>
+                Show All Units
+              </button>
+            </div>
+          )}
+
           {planningError && (
             <div className="planning-error-banner" style={{
               display: "flex",
@@ -3871,10 +3926,10 @@ export default function Home() {
                 </div>
                 <button 
                   onClick={triggerGeneratePlan} 
-                  className={`btn btn-primary ${isViewer ? "role-restricted-btn" : ""}`} 
+                  className={`btn btn-primary ${(isViewer || !isAllUnitsSelected) ? "role-restricted-btn" : ""}`} 
                   style={{display: "flex", alignItems: "center", gap: "6px"}}
-                  disabled={isViewer || isGeneratingPlan}
-                  title={isViewer ? "🔒 Access Restricted: You do not have permission to generate production plans (Viewer role)" : "Generate Production Plan"}
+                  disabled={isViewer || isGeneratingPlan || !isAllUnitsSelected}
+                  title={isViewer ? "🔒 Access Restricted: You do not have permission to generate production plans (Viewer role)" : !isAllUnitsSelected ? "⚠️ Switch to All Mfg Units to generate a plan" : "Generate Production Plan"}
                 >
                   <span className={`material-icons-round ${isGeneratingPlan ? "spinner-rotate" : ""}`} style={{fontSize: "1.1rem"}}>
                     {isGeneratingPlan ? "autorenew" : "analytics"}
