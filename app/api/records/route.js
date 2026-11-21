@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import dbConnect from '@/lib/db';
 import Record from '@/models/Record';
+import ProductionPlan from '@/models/ProductionPlan';
+import PlanItem from '@/models/PlanItem';
 import { generateHistoricalRecords } from '@/lib/mock-data-generator';
 
 export async function GET(request) {
@@ -71,51 +73,32 @@ export async function POST(request) {
       }
     }
 
-    const bulkOps = Object.values(aggregated).map(r => {
-      const updateQuery = action === 'overwrite' ? {
-        $set: {
-          quantity: r.quantity,
-          basicValue: r.basicValue || 0,
-          withGstValue: r.withGstValue || 0,
-          category: r.category,
-          quarter: r.quarter,
+    const bulkOps = Object.values(aggregated).map(r => ({
+      updateOne: {
+        filter: {
           unit: r.unit,
           month: r.month,
           year: r.year,
           partyName: r.partyName,
           bearingNo: r.bearingNo
-        }
-      } : {
-        $inc: {
-          quantity: r.quantity,
-          basicValue: r.basicValue || 0,
-          withGstValue: r.withGstValue || 0
         },
-        $setOnInsert: {
-          category: r.category,
-          quarter: r.quarter,
-          unit: r.unit,
-          month: r.month,
-          year: r.year,
-          partyName: r.partyName,
-          bearingNo: r.bearingNo
-        }
-      };
-
-      return {
-        updateOne: {
-          filter: {
+        update: {
+          $set: {
+            quantity: r.quantity,
+            basicValue: r.basicValue || 0,
+            withGstValue: r.withGstValue || 0,
+            category: r.category,
+            quarter: r.quarter,
             unit: r.unit,
             month: r.month,
             year: r.year,
             partyName: r.partyName,
             bearingNo: r.bearingNo
-          },
-          update: updateQuery,
-          upsert: true
-        }
-      };
-    });
+          }
+        },
+        upsert: true
+      }
+    }));
 
     let insertedCount = 0;
     let updatedCount = 0;
@@ -146,12 +129,16 @@ export async function POST(request) {
 export async function DELETE(request) {
   try {
     await dbConnect();
-    const result = await Record.deleteMany({});
-    console.log(`Deleted ${result.deletedCount} records from database.`);
+    const recResult = await Record.deleteMany({});
+    const planResult = await ProductionPlan.deleteMany({});
+    const itemResult = await PlanItem.deleteMany({});
+    console.log(`Deleted ${recResult.deletedCount} records, ${planResult.deletedCount} plans, ${itemResult.deletedCount} plan items from database.`);
     return NextResponse.json({
       success: true,
-      message: "All records deleted successfully",
-      deletedCount: result.deletedCount
+      message: "All historical records, production plans, and plan allocations deleted successfully from database",
+      deletedCount: recResult.deletedCount,
+      deletedPlansCount: planResult.deletedCount,
+      deletedPlanItemsCount: itemResult.deletedCount
     });
   } catch (error) {
     console.error("DELETE records error:", error);

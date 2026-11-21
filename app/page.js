@@ -1673,7 +1673,7 @@ export default function Home() {
         setUploadProgress(null);
         setShowDuplicateModal(true);
       } else {
-        submitImportCheck(finalRows, "merge");
+        submitImportCheck(finalRows, "overwrite");
       }
 
     } catch (err) {
@@ -1712,10 +1712,10 @@ export default function Home() {
       }
     }
 
-    submitImportCheck(rowsToUpload, action);
+    submitImportCheck(rowsToUpload, action || "overwrite");
   };
 
-  const submitImportCheck = async (rowsToUpload, action = "merge") => {
+  const submitImportCheck = async (rowsToUpload, action = "overwrite") => {
     setIsUploading(true);
     setUploadProgress({
       text: `Syncing ${rowsToUpload.length.toLocaleString()} records with MongoDB...`,
@@ -1741,7 +1741,7 @@ export default function Home() {
         const res = await fetch('/api/records', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rows: batch, action })
+          body: JSON.stringify({ rows: batch, action: 'overwrite' })
         });
         const data = await res.json();
         if (!data.success) {
@@ -1753,12 +1753,10 @@ export default function Home() {
 
       await fetchRecords();
 
-      if (action === "overwrite") {
-        alert(`Successfully overwritten records! Total records processed: ${rowsToUpload.length.toLocaleString()}`);
-      } else if (action === "skip") {
-        alert(`Successfully ingested new records (skipped duplicates)! Total records: ${rowsToUpload.length.toLocaleString()}`);
+      if (action === "skip") {
+        alert(`Successfully ingested new records (skipped duplicates)! Total new records added: ${rowsToUpload.length.toLocaleString()}`);
       } else {
-        alert(`Successfully merged spreadsheet records! (New: ${totalInserted}, Appended/Updated: ${totalUpdated})`);
+        alert(`Successfully synced spreadsheet records! (New records appended: ${totalInserted}, Matching records overwritten: ${totalUpdated})`);
       }
     } catch (err) {
       console.error("Import error:", err);
@@ -1783,9 +1781,11 @@ export default function Home() {
         setUploaderPreview([]);
         setUploaderPreviewPage(1);
         setTempUploadRows([]);
+        setActivePlan(null);
+        setPlanItems([]);
         setShowDeleteModal(false);
         setDeleteConfirmText("");
-        alert(`Successfully deleted all historical records (${data.deletedCount || 0} removed from database).`);
+        alert(`Successfully deleted all historical records and plans from database (${(data.deletedCount || 0).toLocaleString()} records, ${(data.deletedPlanItemsCount || 0).toLocaleString()} plan allocations removed).`);
       } else {
         alert("Failed to delete records: " + data.error);
       }
@@ -5500,17 +5500,14 @@ export default function Home() {
                 The upload engine detected <strong>{duplicateCount} duplicate production records</strong> in your spreadsheet.
               </p>
               <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "16px" }}>
-                Duplicates share the same Unit, Year, Month, Party Name, and Bearing Catalog Number. Please select how you want to resolve these conflicts:
+                Matching records share the same Unit, Year, Month, Party Name, and Bearing Catalog Number. Please select how you want to handle them:
               </p>
               <div className="duplicate-options-list" style={{ display: "flex", flexDirection: "column", gap: "10px", fontSize: "0.85rem" }}>
-                <div style={{ padding: "10px", background: "rgba(139, 92, 246, 0.08)", border: "1px solid rgba(139, 92, 246, 0.2)", borderRadius: "6px" }}>
-                  <strong style={{ color: "var(--color-primary)" }}>Merge / Append (Recommended):</strong> Adds the spreadsheet quantities and values to the existing entries.
-                </div>
-                <div style={{ padding: "10px", background: "rgba(239, 68, 68, 0.08)", border: "1px solid rgba(239, 68, 68, 0.2)", borderRadius: "6px" }}>
-                  <strong style={{ color: "var(--color-danger)" }}>Overwrite:</strong> Replaces the existing database entries entirely with the figures from your spreadsheet.
-                </div>
                 <div style={{ padding: "10px", background: "rgba(16, 185, 129, 0.08)", border: "1px solid rgba(16, 185, 129, 0.2)", borderRadius: "6px" }}>
-                  <strong style={{ color: "var(--color-success)" }}>Skip Duplicates:</strong> Ignores the duplicates in your sheet and only uploads brand new records.
+                  <strong style={{ color: "var(--color-success)" }}>Overwrite Matching & Append New (Recommended):</strong> Updates existing records for matching bearing numbers & dates with your spreadsheet figures, and appends any brand new records.
+                </div>
+                <div style={{ padding: "10px", background: "rgba(139, 92, 246, 0.08)", border: "1px solid rgba(139, 92, 246, 0.2)", borderRadius: "6px" }}>
+                  <strong style={{ color: "var(--color-primary)" }}>Skip Duplicates:</strong> Keeps existing records untouched and only uploads brand new records.
                 </div>
               </div>
             </div>
@@ -5524,7 +5521,7 @@ export default function Home() {
               </button>
               <button 
                 type="button" 
-                className="btn btn-success" 
+                className="btn btn-outline" 
                 onClick={() => handleResolveDuplicates("skip")}
               >
                 Skip Duplicates
@@ -5532,16 +5529,9 @@ export default function Home() {
               <button 
                 type="button" 
                 className="btn btn-primary" 
-                onClick={() => handleResolveDuplicates("merge")}
-              >
-                Merge / Append
-              </button>
-              <button 
-                type="button" 
-                className="btn btn-danger" 
                 onClick={() => handleResolveDuplicates("overwrite")}
               >
-                Overwrite
+                Overwrite Matching & Append New
               </button>
             </div>
           </div>
