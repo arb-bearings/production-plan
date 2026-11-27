@@ -1838,7 +1838,7 @@ export default function Home() {
         const firstRow = rawRows[0] || {};
         const keyMap = {};
         Object.keys(firstRow).forEach(rawKey => {
-          const clean = rawKey.trim().toLowerCase();
+          const clean = String(rawKey).trim().toLowerCase();
           keyMap[rawKey] = HEADER_MAP[clean] || rawKey;
         });
 
@@ -2002,9 +2002,25 @@ export default function Home() {
         const firstRow = rawRows[0] || {};
         const keyMap = {};
         Object.keys(firstRow).forEach(rawKey => {
-          const clean = rawKey.trim().toLowerCase();
+          const clean = String(rawKey).trim().toLowerCase();
           keyMap[rawKey] = HEADER_MAP[clean] || rawKey;
         });
+
+        const mappedHeaders = Object.values(keyMap);
+        const missingHeaders = [
+          { key: "bearingNo", label: "Bearing number", examples: "Bearing No., Bearing Number, Bearing Style, Bearing, Item Code" },
+          { key: "quantity", label: "Pending quantity", examples: "Quantity, Qty, Pending Qty, Pending Quantity, Pending, Order Qty" }
+        ].filter(required => !mappedHeaders.includes(required.key));
+        if (missingHeaders.length > 0) {
+          const detectedHeaders = Object.keys(firstRow).join(", ") || "None detected";
+          setUploaderErrors([{
+            row: 1,
+            error: `Missing required ${missingHeaders.map(header => header.label).join(" and ")} column(s). Accepted headers: ${missingHeaders.map(header => `${header.label}: ${header.examples}`).join("; ")}. Detected headers: ${detectedHeaders}.`
+          }]);
+          setIsUploading(false);
+          setUploadProgress(null);
+          return;
+        }
 
         const standardizedRows = [];
         const errors = [];
@@ -3441,10 +3457,10 @@ export default function Home() {
 
               {uploaderErrors.length > 0 && (
                 <div className="error-console active">
-                  <div className="error-console-title">Row Validation Failures Detected ({uploaderErrors.length})</div>
+                  <div className="error-console-title">Upload needs attention: {uploaderErrors.length} issue{uploaderErrors.length === 1 ? "" : "s"}</div>
                   <ul className="error-console-list">
                     {uploaderErrors.slice(0, 100).map((err, i) => (
-                      <li key={i}>Row {err.row} ({err.bearing}): {err.error}</li>
+                      <li key={i}>Row {err.row}{err.bearing ? ` (${err.bearing})` : ""}: {err.error}</li>
                     ))}
                   </ul>
                   {uploaderErrors.length > 100 && (
@@ -3532,7 +3548,7 @@ export default function Home() {
             <div className="uploader-card" style={{ marginTop: "24px" }}>
               <h3 style={{fontSize: "1.1rem", borderLeft: "3px solid #f59e0b", paddingLeft: "10px"}}>Ingest Pending Orders List</h3>
               <p style={{fontSize: "0.85rem", color: "var(--text-muted)"}}>
-                Upload pending orders spreadsheet. Excel headers must include <strong>Bearing No.</strong> and <strong>Qty.</strong> (e.g. 22217 K, 860). Pending quantities are automatically added into production targets.
+                Required headers: bearing number (<strong>Bearing No.</strong>, <strong>Bearing Number</strong>, <strong>Bearing Style</strong>, <strong>Bearing</strong>, or <strong>Item Code</strong>) and quantity (<strong>Quantity</strong>, <strong>Qty</strong>, <strong>Pending Qty</strong>, <strong>Pending Quantity</strong>, <strong>Pending</strong>, or <strong>Order Qty</strong>). Optional unit headers: <strong>Unit</strong>, <strong>Mfg Unit</strong>, <strong>Depot</strong>, or <strong>Plant</strong>. Matching ignores capitalization and surrounding spaces.
               </p>
               
               <div 
@@ -3801,20 +3817,20 @@ export default function Home() {
               alignItems: "flex-start",
               gap: "14px",
               padding: "16px 20px",
-              background: "rgba(239, 68, 68, 0.12)",
-              border: "1px solid rgba(239, 68, 68, 0.4)",
+              background: "#fee2e2",
+              border: "2px solid #dc2626",
               borderRadius: "12px",
-              color: "#fca5a5",
+              color: "#7f1d1d",
               marginBottom: "16px",
               width: "100%",
-              boxShadow: "0 4px 16px rgba(239, 68, 68, 0.1)"
+              boxShadow: "0 4px 20px rgba(127, 29, 29, 0.2)"
             }}>
               <span className="material-icons-round" style={{ fontSize: "1.5rem", color: "var(--color-danger, #ef4444)", flexShrink: 0, marginTop: "2px" }}>
                 error
               </span>
               <div style={{ display: "flex", flexDirection: "column", gap: "4px", flexGrow: 1 }}>
-                <strong style={{ color: "#fff", fontSize: "0.95rem" }}>Historical Data Missing / Incomplete</strong>
-                <span style={{ fontSize: "0.85rem", lineHeight: "1.5", color: "rgba(255, 255, 255, 0.9)" }}>
+                <strong style={{ color: "#7f1d1d", fontSize: "1rem" }}>Planning could not be generated</strong>
+                <span style={{ fontSize: "0.9rem", lineHeight: "1.5", color: "#7f1d1d", fontWeight: 600 }}>
                   {planningError}
                 </span>
               </div>
@@ -3822,7 +3838,7 @@ export default function Home() {
                 <button 
                   onClick={() => handleTabSwitch("ingestion")} 
                   className="btn btn-secondary"
-                  style={{ fontSize: "0.8rem", padding: "6px 14px", background: "rgba(239, 68, 68, 0.25)", borderColor: "rgba(239, 68, 68, 0.5)", color: "#fff", display: "flex", alignItems: "center", gap: "4px" }}
+                  style={{ fontSize: "0.8rem", padding: "6px 14px", background: "#fecaca", borderColor: "#b91c1c", color: "#7f1d1d", display: "flex", alignItems: "center", gap: "4px" }}
                 >
                   <span className="material-icons-round" style={{ fontSize: "0.95rem" }}>cloud_upload</span>
                   Go to Data Ingestion
@@ -3830,7 +3846,7 @@ export default function Home() {
                 <button 
                   onClick={() => setPlanningError(null)} 
                   className="btn-icon" 
-                  style={{ color: "rgba(255, 255, 255, 0.7)", background: "transparent", border: "none", cursor: "pointer" }}
+                  style={{ color: "#7f1d1d", background: "transparent", border: "none", cursor: "pointer" }}
                   title="Dismiss"
                 >
                   <span className="material-icons-round" style={{ fontSize: "1.2rem" }}>close</span>
